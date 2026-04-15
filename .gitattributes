@@ -1,0 +1,9 @@
+# Normalise line endings to CRLF on Windows checkout
+* text=auto eol=crlf
+
+# Binary files — never touch line endings
+*.exe binary
+*.dll binary
+*.pdb binary
+*.ico binary
+*.png binary
