@@ -1,0 +1,28 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Inno Setup compiled output (built from NetMon_Setup.iss)
+installer/
+
+# Publish artefacts
+publish/
+
+# Debug symbols
+*.pdb
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# User settings (auto-generated at runtime in %AppData%\NetMon\)
+settings.json
