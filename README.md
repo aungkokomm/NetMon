@@ -25,7 +25,7 @@ Sits in the corner of your screen, shows live download/upload speeds, accumulate
 
 ## Installation
 
-1. Download **`NetMon_Setup_v1.0.exe`** from the [Releases](../../releases/latest) page
+1. Download *Latest Release* from the [Releases](../../releases/latest) page
 2. Run it — **no administrator rights required** (installs to `%LocalAppData%\Programs\NetMon`)
 3. Optional: tick *Start NetMon automatically when Windows starts* during setup
 
