@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.NetworkInformation;
 
 namespace NetMon;
@@ -28,12 +29,10 @@ public sealed class NetworkMonitor : IDisposable
 
     private NetworkInterface[] _adapters = Array.Empty<NetworkInterface>();
     private readonly System.Threading.Timer _timer;
+    private volatile bool _disposed;
 
     public event EventHandler<SpeedSample>?          SpeedUpdated;
     public event EventHandler<(long down, long up)>? UsageRecorded;
-
-    public long CurrentDownloadBps { get; private set; }
-    public long CurrentUploadBps   { get; private set; }
 
     public NetworkMonitor()
     {
@@ -57,7 +56,11 @@ public sealed class NetworkMonitor : IDisposable
                          && n.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
                 .ToArray();
         }
-        catch { _adapters = Array.Empty<NetworkInterface>(); }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"NetworkMonitor.ScanAdapters: {ex.Message}");
+            _adapters = Array.Empty<NetworkInterface>();
+        }
 
         _lastRescan = DateTime.UtcNow;
     }
@@ -66,6 +69,7 @@ public sealed class NetworkMonitor : IDisposable
 
     private void Tick(object? _)
     {
+        if (_disposed) return;
         var now = DateTime.UtcNow;
 
         // Periodic full re-enumerate (catches VPN/dock/USB-tether topology changes)
@@ -89,13 +93,10 @@ public sealed class NetworkMonitor : IDisposable
         _lastRx = rx;
         _lastTx = tx;
 
-        CurrentDownloadBps = (long)(dRx / secs);
-        CurrentUploadBps   = (long)(dTx / secs);
-
         SpeedUpdated?.Invoke(this, new SpeedSample
         {
-            DownloadBps = CurrentDownloadBps,
-            UploadBps   = CurrentUploadBps
+            DownloadBps = (long)(dRx / secs),
+            UploadBps   = (long)(dTx / secs)
         });
 
         if (dRx > 0 || dTx > 0)
@@ -115,13 +116,18 @@ public sealed class NetworkMonitor : IDisposable
                 received += s.BytesReceived;
                 sent     += s.BytesSent;
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.WriteLine($"NetworkMonitor.GetTotals: adapter dropped ({ex.Message})");
                 // Adapter disappeared mid-poll — force rescan on next tick
                 _lastRescan = DateTime.MinValue;
             }
         }
     }
 
-    public void Dispose() => _timer.Dispose();
+    public void Dispose()
+    {
+        _disposed = true;
+        _timer.Dispose();
+    }
 }

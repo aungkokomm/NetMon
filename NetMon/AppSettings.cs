@@ -1,10 +1,11 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Win32;
 
 namespace NetMon;
 
-/// <summary>Persists user preferences to %AppData%\NetMon\settings.json.</summary>
+/// <summary>Persists user preferences to %AppData%\NetMon\settings.json (atomically).</summary>
 public sealed class AppSettings
 {
     [JsonPropertyName("bgColor")]
@@ -22,8 +23,17 @@ public sealed class AppSettings
     [JsonPropertyName("startWithWindows")]
     public bool StartWithWindows { get; set; } = false;
 
+    [JsonPropertyName("startMinimized")]
+    public bool StartMinimized { get; set; } = false;
+
+    [JsonPropertyName("hotKeyEnabled")]
+    public bool HotKeyEnabled { get; set; } = false;
+
+    [JsonPropertyName("graphFillAlpha")]
+    public int GraphFillAlpha { get; set; } = 85;
+
     // Window geometry — restored on next launch
-    [JsonPropertyName("winX")]  public int WinX { get; set; } = int.MinValue; // MinValue = not set
+    [JsonPropertyName("winX")]  public int WinX { get; set; } = int.MinValue;
     [JsonPropertyName("winY")]  public int WinY { get; set; } = int.MinValue;
     [JsonPropertyName("winW")]  public int WinW { get; set; } = 0;
     [JsonPropertyName("winH")]  public int WinH { get; set; } = 0;
@@ -59,18 +69,22 @@ public sealed class AppSettings
             if (File.Exists(FilePath))
                 return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new();
         }
-        catch { }
+        catch (Exception ex) { Debug.WriteLine($"AppSettings: load failed: {ex.Message}"); }
         return new();
     }
 
+    /// <summary>Atomic save — write to .tmp then rename.</summary>
     public void Save()
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Opts));
+            var dir = Path.GetDirectoryName(FilePath)!;
+            Directory.CreateDirectory(dir);
+            var tmp = FilePath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Opts));
+            File.Move(tmp, FilePath, overwrite: true);
         }
-        catch { }
+        catch (Exception ex) { Debug.WriteLine($"AppSettings: save failed: {ex.Message}"); }
     }
 
     // ── Windows startup (HKCU Run key — no elevation needed) ─────────────
@@ -78,7 +92,7 @@ public sealed class AppSettings
     private const string RunSubKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
     private const string RunName   = "NetMon";
 
-    /// <summary>Returns true when the Run registry entry exists for NetMon.</summary>
+    /// <summary>True when the HKCU Run entry exists for NetMon.</summary>
     public static bool IsStartupEnabled()
     {
         try
@@ -86,10 +100,10 @@ public sealed class AppSettings
             using var key = Registry.CurrentUser.OpenSubKey(RunSubKey, false);
             return key?.GetValue(RunName) != null;
         }
-        catch { return false; }
+        catch (Exception ex) { Debug.WriteLine($"IsStartupEnabled: {ex.Message}"); return false; }
     }
 
-    /// <summary>Creates or removes the HKCU Run entry and updates <see cref="StartWithWindows"/>.</summary>
+    /// <summary>Creates or removes the Run entry and persists <see cref="StartWithWindows"/>.</summary>
     public void SetStartup(bool enable)
     {
         try
@@ -98,7 +112,7 @@ public sealed class AppSettings
             if (enable)
             {
                 string exePath = Environment.ProcessPath
-                              ?? System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName
+                              ?? Process.GetCurrentProcess().MainModule?.FileName
                               ?? "";
                 if (!string.IsNullOrEmpty(exePath))
                     key?.SetValue(RunName, $"\"{exePath}\"");
@@ -108,7 +122,7 @@ public sealed class AppSettings
                 key?.DeleteValue(RunName, throwOnMissingValue: false);
             }
         }
-        catch { }
+        catch (Exception ex) { Debug.WriteLine($"SetStartup: {ex.Message}"); }
 
         StartWithWindows = enable;
         Save();
