@@ -10,13 +10,21 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishSingleFile>true</PublishSingleFile>
 
+    <!-- Application icon — embedded into the EXE and usable as MainForm.Icon -->
+    <ApplicationIcon>NetMon.ico</ApplicationIcon>
+
     <!-- Versioning — surfaced in the About dialog -->
-    <Version>1.1.0</Version>
-    <AssemblyVersion>1.1.0.0</AssemblyVersion>
-    <FileVersion>1.1.0.0</FileVersion>
-    <InformationalVersion>1.1.0</InformationalVersion>
+    <Version>1.2.0</Version>
+    <AssemblyVersion>1.2.0.0</AssemblyVersion>
+    <FileVersion>1.2.0.0</FileVersion>
+    <InformationalVersion>1.2.0</InformationalVersion>
     <Product>NetMon</Product>
     <Description>Lightweight network bandwidth monitor widget</Description>
     <Copyright>Copyright © 2026 aungkokomm</Copyright>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Embed NetMon.ico as a resource so MainForm can load it at runtime -->
+    <EmbeddedResource Include="NetMon.ico" LogicalName="NetMon.ico" />
+  </ItemGroup>
 </Project>

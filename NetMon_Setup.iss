@@ -8,7 +8,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define MyAppName        "NetMon"
-#define MyAppVersion     "1.1"
+#define MyAppVersion     "1.2"
 #define MyAppPublisher   "NetMon"
 #define MyAppExeName     "NetMon.exe"
 #define MyPublishDir     "NetMon\bin\Release\net8.0-windows\win-x64\publish"
@@ -43,6 +43,9 @@ AllowNoIcons=yes
 ; Uninstaller
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+
+; Installer & wizard icon (same as the app)
+SetupIconFile=NetMon\NetMon.ico
 
 ; Close the running instance before install/update
 CloseApplications=yes

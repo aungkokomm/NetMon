@@ -112,6 +112,10 @@ public sealed class MainForm : Form
         BackColor  = _settings.BgColor;
         _borderCol = DarkenColor(_settings.BgColor, 0.22f);
 
+        // App icon — visible in Alt+Tab and taskbar switcher
+        var appIcon = LoadAppIcon();
+        if (appIcon != null) Icon = appIcon;
+
         RestoreGeometry();
 
         // ─ graph ─────────────────────────────────────────────────────────
@@ -159,7 +163,7 @@ public sealed class MainForm : Form
         _trayMenu = BuildTrayMenu();
         _tray     = new NotifyIcon
         {
-            Icon             = BuildTrayIcon(),
+            Icon             = appIcon ?? BuildTrayIcon(),
             Text             = "NetMon",
             Visible          = true,
             ContextMenuStrip = _trayMenu
@@ -624,6 +628,47 @@ public sealed class MainForm : Form
     [DllImport("user32.dll")]
     private static extern bool DestroyIcon(IntPtr h);
 
+    // ── app icon loader (embedded resource) ──────────────────────────────
+
+    private static Icon? LoadAppIcon()
+    {
+        try
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            using var stream = asm.GetManifestResourceStream("NetMon.ico");
+            if (stream == null) return null;
+            return new Icon(stream);
+        }
+        catch (Exception ex) { Debug.WriteLine($"LoadAppIcon: {ex.Message}"); return null; }
+    }
+
+    // ── dialog helper: prevents modals from hiding behind TopMost widget ─
+
+    private DialogResult ShowDialogSafe(Form dlg)
+    {
+        bool wasTopMost = TopMost;
+        if (wasTopMost) TopMost = false;
+        dlg.ShowInTaskbar = false;
+        dlg.TopMost       = wasTopMost;   // match widget TopMost state
+        try
+        {
+            return dlg.ShowDialog(this);
+        }
+        finally
+        {
+            if (wasTopMost) TopMost = true;
+        }
+    }
+
+    /// <summary>Overload for the built-in common dialogs (ColorDialog etc.) which have no TopMost property.</summary>
+    private DialogResult ShowDialogSafe(CommonDialog dlg, IWin32Window owner)
+    {
+        bool wasTopMost = TopMost;
+        if (wasTopMost) TopMost = false;
+        try { return dlg.ShowDialog(owner); }
+        finally { if (wasTopMost) TopMost = true; }
+    }
+
     // ── background ────────────────────────────────────────────────────────
 
     private void ApplyBackground(Color c)
@@ -697,7 +742,7 @@ public sealed class MainForm : Form
         miLimit.Click += (_, _) => ShowLimitDialog();
 
         var miUsage = new ToolStripMenuItem("View Usage…");
-        miUsage.Click += (_, _) => new UsageForm(_store).ShowDialog(this);
+        miUsage.Click += (_, _) => { using var f = new UsageForm(_store); ShowDialogSafe(f); };
 
         var miAbout = new ToolStripMenuItem("About NetMon…");
         miAbout.Click += (_, _) => ShowAboutDialog();
@@ -786,6 +831,7 @@ public sealed class MainForm : Form
         {
             using var dlg = new ColorDialog
                 { Color = _settings.BgColor, AnyColor = true, FullOpen = true };
+            // Owner = frm which already matches widget's TopMost state
             if (dlg.ShowDialog(frm) == DialogResult.OK)
             {
                 chosen = dlg.Color;
@@ -805,7 +851,7 @@ public sealed class MainForm : Form
         frm.Controls.Add(btnCancel);
         frm.CancelButton = btnCancel;
 
-        if (frm.ShowDialog(this) == DialogResult.OK)
+        if (ShowDialogSafe(frm) == DialogResult.OK)
         {
             _settings.BgColor = chosen;
             _settings.Save();
@@ -847,7 +893,7 @@ public sealed class MainForm : Form
         frm.AcceptButton = ok; frm.CancelButton = cancel;
         frm.Controls.AddRange(new Control[] { lbl, lblPct, tb, ok, cancel });
 
-        if (frm.ShowDialog(this) == DialogResult.OK)
+        if (ShowDialogSafe(frm) == DialogResult.OK)
         {
             _settings.Opacity = tb.Value / 100.0;
             _settings.Save();
@@ -882,7 +928,7 @@ public sealed class MainForm : Form
         frm.AcceptButton = ok; frm.CancelButton = cancel;
         frm.Controls.AddRange(new Control[] { lbl, num, ok, cancel });
 
-        if (frm.ShowDialog(this) == DialogResult.OK)
+        if (ShowDialogSafe(frm) == DialogResult.OK)
         {
             _settings.MonthlyLimitGB = (double)num.Value;
             _settings.Save();
@@ -891,69 +937,167 @@ public sealed class MainForm : Form
 
     private void ShowAboutDialog()
     {
-        var asmName = Assembly.GetExecutingAssembly().GetName();
+        var asmName    = Assembly.GetExecutingAssembly().GetName();
         string version = asmName.Version?.ToString(3) ?? "1.0";
+
+        const int W = 440, H = 310;
+        const int Pad = 20, BtnW = 120, BtnH = 32, BtnGap = 10;
 
         using var frm = new Form
         {
-            Text = "About NetMon", Size = new Size(360, 220),
+            Text            = "About NetMon",
+            ClientSize      = new Size(W, H),
             FormBorderStyle = FormBorderStyle.FixedDialog,
-            StartPosition = FormStartPosition.CenterParent,
-            MaximizeBox = false, MinimizeBox = false,
-            Font = new Font("Segoe UI", 9f),
-            BackColor = Color.White
+            StartPosition   = FormStartPosition.CenterParent,
+            MaximizeBox     = false, MinimizeBox = false,
+            ShowInTaskbar   = false,
+            Font            = new Font("Segoe UI", 9.5f),
+            BackColor       = Color.White
         };
+        var appIcon = LoadAppIcon();
+        if (appIcon != null) frm.Icon = appIcon;
+
+        // Blue header strip with icon + product name
+        const int HdrH = 86;
+        var header = new Panel
+        {
+            Bounds    = new Rectangle(0, 0, W, HdrH),
+            BackColor = Color.FromArgb(35, 105, 182)
+        };
+        // Paint a subtle vertical gradient on the header
+        header.Paint += (_, pe) =>
+        {
+            using var grad = new LinearGradientBrush(
+                header.ClientRectangle,
+                Color.FromArgb( 50, 130, 210),
+                Color.FromArgb( 20,  80, 150),
+                LinearGradientMode.Vertical);
+            pe.Graphics.FillRectangle(grad, header.ClientRectangle);
+        };
+
+        if (appIcon != null)
+        {
+            var iconBox = new PictureBox
+            {
+                Image       = appIcon.ToBitmap(),
+                SizeMode    = PictureBoxSizeMode.Zoom,
+                Bounds      = new Rectangle(Pad, (HdrH - 56) / 2, 56, 56),
+                BackColor   = Color.Transparent
+            };
+            header.Controls.Add(iconBox);
+        }
 
         var title = new Label
         {
-            Text = "NetMon",
-            Font = new Font("Segoe UI Semibold", 14f),
-            AutoSize = true,
-            Location = new Point(16, 14),
-            ForeColor = Color.FromArgb(35, 78, 128)
+            Text      = "NetMon",
+            Font      = new Font("Segoe UI Semibold", 18f),
+            AutoSize  = true,
+            ForeColor = Color.White,
+            BackColor = Color.Transparent,
+            Location  = new Point(appIcon != null ? Pad + 68 : Pad, 14)
         };
-        var ver = new Label
+        var sub = new Label
         {
-            Text = $"Version {version}",
-            AutoSize = true,
-            Location = new Point(16, 46),
-            ForeColor = Color.DimGray
+            Text      = $"Version {version}",
+            Font      = new Font("Segoe UI", 9.5f),
+            AutoSize  = true,
+            ForeColor = Color.FromArgb(210, 230, 255),
+            BackColor = Color.Transparent,
+            Location  = new Point(appIcon != null ? Pad + 68 : Pad, 48)
         };
+        header.Controls.Add(title);
+        header.Controls.Add(sub);
+
+        // Body text
         var desc = new Label
         {
-            Text = "Lightweight network bandwidth monitor widget.\n" +
-                   "Inspired by DU Meter. Free and open-source.",
-            AutoSize = false,
-            Bounds = new Rectangle(16, 72, 320, 40)
+            Text =
+                "A lightweight, always-visible network bandwidth monitor.\n" +
+                "Inspired by DU Meter. Free and open-source — forever.",
+            Bounds    = new Rectangle(Pad, HdrH + 16, W - Pad * 2, 42),
+            ForeColor = Color.FromArgb(40, 40, 40)
+        };
+
+        var linkLbl = new Label
+        {
+            Text      = "Project home:",
+            AutoSize  = true,
+            Location  = new Point(Pad, HdrH + 66),
+            ForeColor = Color.FromArgb(90, 90, 90)
         };
         var link = new LinkLabel
         {
-            Text = "github.com/aungkokomm/NetMon",
-            AutoSize = true,
-            Location = new Point(16, 118)
+            Text          = "github.com/aungkokomm/NetMon",
+            AutoSize      = true,
+            Location      = new Point(Pad + 88, HdrH + 66),
+            LinkColor     = Color.FromArgb(35, 105, 182),
+            ActiveLinkColor = Color.FromArgb(210, 50, 30),
+            VisitedLinkColor = Color.FromArgb(35, 105, 182),
+            LinkBehavior  = LinkBehavior.HoverUnderline
         };
-        link.LinkClicked += (_, _) =>
-        {
-            try { Process.Start(new ProcessStartInfo("https://github.com/aungkokomm/NetMon") { UseShellExecute = true }); }
-            catch (Exception ex) { Debug.WriteLine($"About link: {ex.Message}"); }
-        };
+        link.LinkClicked += (_, _) => OpenUrl("https://github.com/aungkokomm/NetMon");
+
         var copy = new Label
         {
-            Text = "© aungkokomm",
-            AutoSize = true,
-            Location = new Point(16, 144),
-            ForeColor = Color.DimGray,
-            Font = new Font("Segoe UI", 8f)
-        };
-        var ok = new Button
-        {
-            Text = "OK", Bounds = new Rectangle(256, 144, 80, 28),
-            DialogResult = DialogResult.OK, FlatStyle = FlatStyle.System
+            Text      = "© 2026 aungkokomm · MIT License",
+            AutoSize  = true,
+            Location  = new Point(Pad, HdrH + 92),
+            ForeColor = Color.FromArgb(130, 130, 130),
+            Font      = new Font("Segoe UI", 8.5f)
         };
 
-        frm.AcceptButton = ok; frm.CancelButton = ok;
-        frm.Controls.AddRange(new Control[] { title, ver, desc, link, copy, ok });
-        frm.ShowDialog(this);
+        // Footer button bar
+        const int FooterH = 56;
+        var footer = new Panel
+        {
+            Bounds    = new Rectangle(0, H - FooterH, W, FooterH),
+            BackColor = Color.FromArgb(245, 248, 252)
+        };
+        footer.Paint += (_, pe) =>
+        {
+            using var pen = new Pen(Color.FromArgb(215, 225, 235), 1);
+            pe.Graphics.DrawLine(pen, 0, 0, footer.Width, 0);
+        };
+
+        // Buttons right-aligned in the footer
+        int bY = (FooterH - BtnH) / 2;
+        var okBtn = new Button
+        {
+            Text         = "Close",
+            Bounds       = new Rectangle(W - Pad - BtnW, bY, BtnW, BtnH),
+            DialogResult = DialogResult.OK,
+            FlatStyle    = FlatStyle.System,
+            Font         = new Font("Segoe UI", 9.5f)
+        };
+        var ghBtn = new Button
+        {
+            Text         = "Visit GitHub",
+            Bounds       = new Rectangle(W - Pad - BtnW * 2 - BtnGap, bY, BtnW, BtnH),
+            FlatStyle    = FlatStyle.System,
+            Font         = new Font("Segoe UI", 9.5f)
+        };
+        ghBtn.Click += (_, _) => OpenUrl("https://github.com/aungkokomm/NetMon");
+
+        footer.Controls.Add(okBtn);
+        footer.Controls.Add(ghBtn);
+
+        frm.Controls.Add(header);
+        frm.Controls.Add(desc);
+        frm.Controls.Add(linkLbl);
+        frm.Controls.Add(link);
+        frm.Controls.Add(copy);
+        frm.Controls.Add(footer);
+
+        frm.AcceptButton = okBtn;
+        frm.CancelButton = okBtn;
+
+        ShowDialogSafe(frm);
+    }
+
+    private static void OpenUrl(string url)
+    {
+        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        catch (Exception ex) { Debug.WriteLine($"OpenUrl: {ex.Message}"); }
     }
 
     // ── tray icon (HiDPI) ────────────────────────────────────────────────
