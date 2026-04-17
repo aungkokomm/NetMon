@@ -5,7 +5,8 @@ A lightweight, always-on-top Windows network bandwidth monitor widget — inspir
 Sits in the corner of your screen, shows live download/upload speeds, accumulates daily and monthly usage, and gets out of your way.
 
 ---
-<img width="426" height="162" alt="image" src="https://github.com/user-attachments/assets/570fd704-cfb0-49fa-9188-9604332deba3" />
+<img width="371" height="133" alt="image" src="https://github.com/user-attachments/assets/96538715-b5ee-4446-9d60-929d5e09b2d2" />
+
 
 ## Features
 
