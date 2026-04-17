@@ -45,16 +45,59 @@ public sealed class NetworkMonitor : IDisposable
 
     // ── adapter cache ─────────────────────────────────────────────────────
 
+    // Substrings (case-insensitive) found in NetworkInterface.Name or Description
+    // that identify a VPN / virtual-overlay adapter whose traffic is already
+    // being counted on the underlying physical NIC. Including these would
+    // double-count every byte while the VPN is active (classic symptom: NetMon
+    // shows ~2× the real speed under Cloudflare WARP).
+    private static readonly string[] VpnKeywords =
+    {
+        "cloudflare", "warp",
+        "wireguard",
+        "openvpn", "tap-windows", "tap-win32", "tap adapter",
+        "tailscale",
+        "zerotier",
+        "hamachi",
+        "nordvpn", "expressvpn", "surfshark", "protonvpn", "mullvad",
+        "cyberghost", "private internet access",
+        "wan miniport",                     // PPP / L2TP / PPTP / IKEv2 / SSTP
+        "anyconnect", "globalprotect", "pulse secure",
+        "forticlient", "sophos connect", "zscaler",
+        "juniper network connect",
+        "vpn"                               // catch-all last-resort
+    };
+
+    private static bool IsVirtualOverlay(NetworkInterface n)
+    {
+        string desc = (n.Description ?? "").ToLowerInvariant();
+        string name = (n.Name        ?? "").ToLowerInvariant();
+        foreach (var kw in VpnKeywords)
+            if (desc.Contains(kw) || name.Contains(kw)) return true;
+        return false;
+    }
+
     private void ScanAdapters()
     {
         try
         {
-            _adapters = NetworkInterface
-                .GetAllNetworkInterfaces()
+            var all = NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up
                          && n.NetworkInterfaceType != NetworkInterfaceType.Loopback
                          && n.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
                 .ToArray();
+
+            var physical = all.Where(n => !IsVirtualOverlay(n)).ToArray();
+
+            // If at least one physical adapter is up, only count those — this
+            // avoids the double-counting seen with Cloudflare WARP / WireGuard
+            // / etc.  If *no* physical adapter is up (laptop on a corporate
+            // VPN with no other NIC), fall back to counting everything so the
+            // user still sees their real traffic.
+            _adapters = physical.Length > 0 ? physical : all;
+
+            if (physical.Length == 0 && all.Length > 0)
+                Debug.WriteLine($"NetworkMonitor: no physical adapter — " +
+                                $"falling back to {all.Length} overlay adapter(s)");
         }
         catch (Exception ex)
         {
