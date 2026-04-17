@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 namespace NetMon;
@@ -8,28 +10,43 @@ namespace NetMon;
 /// <summary>
 /// Compact, borderless, always-on-top bandwidth widget.
 ///
-/// Architecture changes vs previous version:
-///   • SpeedBar is no longer a WinForms Control — it is painted directly inside
-///     MainForm.OnPaint, eliminating one HWND and all its message overhead.
-///   • ResizeGrip is no longer a WinForms Control — resize is handled through a
-///     unified mouse state-machine in the form itself.
-///   • Controls remaining: GraphPanel, StatsPanel, TitleButton×2. (Down from 7.)
-///   • Window position and size are saved to settings on close and restored on start.
+/// Architecture:
+///   • Speed bar is painted directly in OnPaint — no child HWND.
+///   • Resize grip is a mouse-state-machine hot-zone — no child HWND.
+///   • Controls remaining: GraphPanel, StatsPanel, TitleButton×2.
+///   • Window geometry, colour, opacity persist across launches.
+///   • Single-instance via named Mutex + broadcast WM_ShowNetMon.
+///   • Optional global hotkey (Win+Shift+N) toggles visibility.
+///   • Drag edge-snap within 12 px of screen work-area.
 /// </summary>
 public sealed class MainForm : Form
 {
     // ── layout constants ─────────────────────────────────────────────────
-    private const int BP       = 2;    // border inset (px)
-    private const int BarH     = 30;   // speed-bar height
-    private const int StatsH   = 118;  // stats panel height
-    private const int DefW     = 300;  // default width
-    private const int DefGrH   = 70;   // default graph height
-    private const int CornerR  = 10;   // rounded-corner radius
-    private const int BtnSz    = 15;   // title-button size
-    private const int GripSz   = 15;   // bottom-right resize hot-zone
+    private const int BorderPad          = 2;
+    private const int BarHeight          = 30;
+    private const int StatsHeight        = 118;
+    private const int DefaultWidth       = 300;
+    private const int DefaultGraphHeight = 70;
+    private const int CornerRadius       = 10;
+    private const int ButtonSize         = 15;
+    private const int GripSize           = 15;
+    private const int SnapDistance       = 12;
 
-    private static int PillH    => BP + BarH + BP;
-    private static int DefFullH => BP + DefGrH + BarH + BP;
+    private static int PillHeight        => BorderPad + BarHeight + BorderPad;
+    private static int DefaultFullHeight => BorderPad + DefaultGraphHeight + BarHeight + BorderPad;
+
+    // ── DWM / Win32 named constants ───────────────────────────────────────
+    private const int  DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int  DWMWCP_ROUND                   = 2;
+    private const int  WM_HOTKEY                      = 0x0312;
+    private const uint MOD_SHIFT                      = 0x0004;
+    private const uint MOD_WIN                        = 0x0008;
+    private const int  HOTKEY_ID                      = 0xB17F;
+    private const int  VK_N                           = 0x4E;
+
+    /// <summary>Cross-process signal — running instance shows itself when received.</summary>
+    public static readonly uint WmShowNetMon = RegisterWindowMessage(
+        "NetMon_ShowMe_{8F4E2A1B-C3D5-4E6F-A7B8-9C0D1E2F3A4B}");
 
     // ── state ─────────────────────────────────────────────────────────────
     private AppSettings _settings;
@@ -37,16 +54,22 @@ public sealed class MainForm : Form
     private bool        _compact;
     private bool        _expanded;
     private int         _savedFullH;
-    private int         _graphH = DefGrH;     // current computed graph height
+    private int         _graphH = DefaultGraphHeight;
+    private bool        _firstShow       = true;
+    private bool        _hotkeyRegistered;
+
+    // Cached today-usage to avoid double store lookup per speed tick
+    private DayUsage _cachedToday   = new();
+    private DateTime _cachedTodayAt = DateTime.MinValue;
 
     // ── speed data (painted directly in OnPaint) ──────────────────────────
     private long _dlBps, _ulBps;
 
     // ── controls ──────────────────────────────────────────────────────────
-    private readonly GraphPanel       _graph;
-    private readonly StatsPanel       _statsPanel;
-    private readonly TitleButton      _btnCompact;
-    private readonly TitleButton      _btnClose;
+    private readonly GraphPanel   _graph;
+    private readonly StatsPanel   _statsPanel;
+    private readonly TitleButton  _btnCompact;
+    private readonly TitleButton  _btnClose;
 
     // ── services ──────────────────────────────────────────────────────────
     private readonly SpeedBarPainter  _sb;
@@ -72,7 +95,7 @@ public sealed class MainForm : Form
         _settings    = AppSettings.Load();
         _store       = new UsageStore();
         _monitor     = new NetworkMonitor();
-        _savedFullH  = DefFullH;
+        _savedFullH  = DefaultFullHeight;
         _sb          = new SpeedBarPainter();
         _bgBrush     = new SolidBrush(_settings.BgColor);
 
@@ -82,27 +105,29 @@ public sealed class MainForm : Form
         ShowInTaskbar   = false;
         MinimumSize     = new Size(180, 50);
         DoubleBuffered  = true;
+        KeyPreview      = true;
 
         TopMost    = _settings.AlwaysOnTop;
         Opacity    = Math.Clamp(_settings.Opacity, 0.2, 1.0);
         BackColor  = _settings.BgColor;
         _borderCol = DarkenColor(_settings.BgColor, 0.22f);
 
-        // Restore saved geometry or place bottom-right of primary screen
         RestoreGeometry();
 
         // ─ graph ─────────────────────────────────────────────────────────
         _graph = new GraphPanel
         {
-            Location = new Point(BP, BP),
-            Size     = new Size(DefW - BP * 2, DefGrH)
+            Location  = new Point(BorderPad, BorderPad),
+            Size      = new Size(DefaultWidth - BorderPad * 2, DefaultGraphHeight),
+            FillAlpha = _settings.GraphFillAlpha
         };
         Controls.Add(_graph);
 
         // ─ stats panel (hidden) ───────────────────────────────────────────
         _statsPanel = new StatsPanel
         {
-            Bounds    = new Rectangle(BP, BP + DefGrH + BarH, DefW - BP * 2, StatsH),
+            Bounds    = new Rectangle(BorderPad, BorderPad + DefaultGraphHeight + BarHeight,
+                                      DefaultWidth - BorderPad * 2, StatsHeight),
             BackColor = _settings.BgColor,
             Visible   = false
         };
@@ -114,14 +139,11 @@ public sealed class MainForm : Form
         Controls.Add(_btnCompact);
         Controls.Add(_btnClose);
 
-        // Tooltips
         var tips = new ToolTip { InitialDelay = 400, ShowAlways = true };
         tips.SetToolTip(_btnCompact, "Compact / pill mode  (double-click to expand)");
         tips.SetToolTip(_btnClose,   "Hide to tray  (right-click tray icon for menu)");
 
-        // ─ mouse wiring ──────────────────────────────────────────────────
-        // Attach unified handlers to child controls so drag and resize work
-        // regardless of which control is under the cursor.
+        // ─ mouse wiring on children ──────────────────────────────────────
         foreach (var c in new Control[] { _graph, _statsPanel })
         {
             c.MouseDown        += (_, e) => HandleMouseDown(e);
@@ -146,24 +168,40 @@ public sealed class MainForm : Form
 
         // ─ monitor ───────────────────────────────────────────────────────
         _monitor.SpeedUpdated  += OnSpeedUpdated;
-        _monitor.UsageRecorded += (_, e) => _store.Add(e.down, e.up);
+        _monitor.UsageRecorded += (_, e) =>
+        {
+            _store.Add(e.down, e.up);
+            _cachedTodayAt = DateTime.MinValue;   // invalidate cache
+        };
 
-        // ─ cleanup ───────────────────────────────────────────────────────
         FormClosing += OnFormClosing;
 
         UpdateLayout();
+    }
+
+    // ── start-minimized handling ─────────────────────────────────────────
+
+    protected override void SetVisibleCore(bool value)
+    {
+        if (_firstShow && value && _settings.StartMinimized)
+        {
+            _firstShow = false;
+            if (!IsHandleCreated) CreateHandle();
+            base.SetVisibleCore(false);
+            return;
+        }
+        _firstShow = false;
+        base.SetVisibleCore(value);
     }
 
     // ── geometry persistence ──────────────────────────────────────────────
 
     private void RestoreGeometry()
     {
-        // Size
-        int w = _settings.WinW > 0 ? Math.Max(_settings.WinW, 180) : DefW;
-        int h = _settings.WinH > 0 ? Math.Max(_settings.WinH, PillH) : DefFullH;
+        int w = _settings.WinW > 0 ? Math.Max(_settings.WinW, 180) : DefaultWidth;
+        int h = _settings.WinH > 0 ? Math.Max(_settings.WinH, PillHeight) : DefaultFullHeight;
         Size = new Size(w, h);
 
-        // Position
         if (_settings.WinX != int.MinValue)
         {
             Location = ClampToWorkArea(new Point(_settings.WinX, _settings.WinY), Size);
@@ -183,18 +221,31 @@ public sealed class MainForm : Form
             Math.Clamp(p.Y, wa.Top,  Math.Max(wa.Top,  wa.Bottom - s.Height)));
     }
 
+    private Point SnapToEdges(Point p, Size s)
+    {
+        var wa = Screen.GetWorkingArea(new Rectangle(p, s));
+        int x  = p.X, y = p.Y;
+        if (Math.Abs(x - wa.Left)              < SnapDistance) x = wa.Left;
+        if (Math.Abs((x + s.Width) - wa.Right) < SnapDistance) x = wa.Right  - s.Width;
+        if (Math.Abs(y - wa.Top)               < SnapDistance) y = wa.Top;
+        if (Math.Abs((y + s.Height) - wa.Bottom)< SnapDistance) y = wa.Bottom - s.Height;
+        return new Point(x, y);
+    }
+
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-        // Persist geometry
         _settings.WinX = Location.X;
         _settings.WinY = Location.Y;
         _settings.WinW = Width;
-        _settings.WinH = _compact ? _savedFullH : (_expanded ? Height - StatsH : Height);
+        _settings.WinH = _compact ? _savedFullH : (_expanded ? Height - StatsHeight : Height);
         _settings.Save();
+
+        UnregisterGlobalHotkey();
 
         _tray.Visible = false;
         _tray.Dispose();
         _monitor.Dispose();
+        _store.Dispose();
         _sb.Dispose();
         _bgBrush.Dispose();
     }
@@ -206,37 +257,37 @@ public sealed class MainForm : Form
         if (IsDisposed) return;
         if (InvokeRequired) { BeginInvoke(() => OnSpeedUpdated(_, s)); return; }
 
-        // Tray tooltip (always, even when hidden — cheap string op)
         string tip = $"NetMon\n↓ {FormatSpeed(s.DownloadBps)}\n↑ {FormatSpeed(s.UploadBps)}";
         if (tip.Length > 63) tip = tip[..63];
         if (_tray.Text != tip) _tray.Text = tip;
 
         if (!Visible) return;
 
-        // Graph (only in full mode)
+        // Refresh cached "today" at most once per 2 s
+        if ((DateTime.UtcNow - _cachedTodayAt).TotalSeconds > 2)
+        {
+            _cachedToday   = _store.GetToday();
+            _cachedTodayAt = DateTime.UtcNow;
+        }
+
         if (!_compact)
         {
             _graph.AddSample(s.DownloadBps, s.UploadBps);
-
-            // Today's total as overlay in graph
-            var today   = _store.GetToday();
-            var topInfo = $"Today: {FormatBytes(today.BytesReceived + today.BytesSent)}";
+            var topInfo = $"Today: {FormatBytes(_cachedToday.BytesReceived + _cachedToday.BytesSent)}";
             if (_graph.TopInfo != topInfo) _graph.TopInfo = topInfo;
         }
 
-        // Speed bar (invalidate only that rectangle — avoids full form repaint)
         bool changed = _dlBps != s.DownloadBps || _ulBps != s.UploadBps;
         _dlBps = s.DownloadBps;
         _ulBps = s.UploadBps;
         if (changed) Invalidate(SpeedBarRect);
 
-        // Stats panel
         if (_statsPanel.Visible)
-            _statsPanel.Refresh(_store.GetToday(), _store.GetThisMonth(),
+            _statsPanel.Refresh(_cachedToday, _store.GetThisMonth(),
                                 _settings.MonthlyLimitBytes);
     }
 
-    // ── mouse handling (unified — form + children) ────────────────────────
+    // ── mouse handling ────────────────────────────────────────────────────
 
     protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); HandleMouseDown(e); }
     protected override void OnMouseMove(MouseEventArgs e) { base.OnMouseMove(e); HandleMouseMove(e); }
@@ -250,14 +301,14 @@ public sealed class MainForm : Form
     private void HandleMouseDown(MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
-        var fp = PointToClient(Cursor.Position);       // form-space regardless of source control
+        var fp = PointToClient(Cursor.Position);
 
         if (!_compact && GripRect.Contains(fp))
         {
-            _drag        = DragMode.Resizing;
-            _dragOrigin  = Cursor.Position;
+            _drag         = DragMode.Resizing;
+            _dragOrigin   = Cursor.Position;
             _dragOrigSize = Size;
-            Capture      = true;                       // keep receiving moves outside form
+            Capture       = true;
         }
         else
         {
@@ -270,16 +321,15 @@ public sealed class MainForm : Form
     private void HandleMouseMove(MouseEventArgs e)
     {
         var fp = PointToClient(Cursor.Position);
-
-        // Cursor hint for resize zone
         Cursor = !_compact && GripRect.Contains(fp) ? Cursors.SizeNWSE : Cursors.Default;
 
         switch (_drag)
         {
             case DragMode.Moving when e.Button == MouseButtons.Left:
-                Location = new Point(
+                var target = new Point(
                     _dragFormOrigin.X + Cursor.Position.X - _dragOrigin.X,
                     _dragFormOrigin.Y + Cursor.Position.Y - _dragOrigin.Y);
+                Location = SnapToEdges(target, Size);
                 break;
 
             case DragMode.Resizing when e.Button == MouseButtons.Left:
@@ -303,8 +353,40 @@ public sealed class MainForm : Form
 
     private void HandleDoubleClick()
     {
-        if (_compact) ToggleCompact();   // escape pill mode
-        else          ToggleExpand();    // show / hide stats
+        if (_compact) ToggleCompact();
+        else          ToggleExpand();
+    }
+
+    // ── keyboard shortcuts ────────────────────────────────────────────────
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.Handled) return;
+
+        if (e.KeyCode == Keys.Escape)
+        {
+            ToggleWindow();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Control && e.KeyCode == Keys.H)
+        {
+            ToggleCompact();
+            e.Handled = true;
+            return;
+        }
+
+        // Arrow nudge (1 px), Shift+Arrow nudges 10 px
+        if (e.KeyCode is Keys.Left or Keys.Right or Keys.Up or Keys.Down)
+        {
+            int step = e.Shift ? 10 : 1;
+            int dx = e.KeyCode == Keys.Left ? -step : e.KeyCode == Keys.Right ? step : 0;
+            int dy = e.KeyCode == Keys.Up   ? -step : e.KeyCode == Keys.Down  ? step : 0;
+            Location = ClampToWorkArea(new Point(Location.X + dx, Location.Y + dy), Size);
+            e.Handled = true;
+        }
     }
 
     // ── compact toggle ────────────────────────────────────────────────────
@@ -315,23 +397,23 @@ public sealed class MainForm : Form
 
         if (_compact)
         {
-            _savedFullH = _expanded ? Height - StatsH : Height;
+            _savedFullH = _expanded ? Height - StatsHeight : Height;
             if (_expanded) { _statsPanel.Visible = false; _expanded = false; }
 
-            _graph.Visible         = false;
-            _btnClose.Visible      = false;
-            _btnCompact.Size       = new Size(BtnSz, BtnSz);
-            _btnCompact.Symbol     = "□";   // expand indicator
-            MinimumSize            = new Size(120, PillH);
-            Height                 = PillH;
+            _graph.Visible     = false;
+            _btnClose.Visible  = false;
+            _btnCompact.Size   = new Size(ButtonSize, ButtonSize);
+            _btnCompact.Symbol = "□";
+            MinimumSize        = new Size(120, PillHeight);
+            Height             = PillHeight;
         }
         else
         {
-            _graph.Visible         = true;
-            _btnClose.Visible      = true;
-            _btnCompact.Symbol     = "−";   // compact indicator
-            MinimumSize            = new Size(180, 50);
-            Height                 = _savedFullH > 0 ? _savedFullH : DefFullH;
+            _graph.Visible     = true;
+            _btnClose.Visible  = true;
+            _btnCompact.Symbol = "−";
+            MinimumSize        = new Size(180, 50);
+            Height             = _savedFullH > 0 ? _savedFullH : DefaultFullHeight;
         }
 
         UpdateLayout();
@@ -349,13 +431,13 @@ public sealed class MainForm : Form
                                 _settings.MonthlyLimitBytes);
             _statsPanel.Visible = true;
             _expanded           = true;
-            Height             += StatsH;
+            Height             += StatsHeight;
         }
         else
         {
             _statsPanel.Visible = false;
             _expanded           = false;
-            Height             -= StatsH;
+            Height             -= StatsHeight;
         }
     }
 
@@ -366,7 +448,7 @@ public sealed class MainForm : Form
         base.OnResize(e);
         if (!IsHandleCreated) return;
         if (!_compact)
-            _savedFullH = _expanded ? Height - StatsH : Height;
+            _savedFullH = _expanded ? Height - StatsHeight : Height;
         UpdateLayout();
     }
 
@@ -376,23 +458,21 @@ public sealed class MainForm : Form
 
         if (_compact)
         {
-            // Pill: speed bar fills entire form
-            // Compact button floated right-centre of pill
-            _btnCompact.Location = new Point(w - BtnSz - 4, (h - BtnSz) / 2);
+            _btnCompact.Location = new Point(w - ButtonSize - 4, (h - ButtonSize) / 2);
             _btnCompact.BringToFront();
         }
         else
         {
-            int statsH = _statsPanel?.Visible == true ? StatsH : 0;
-            _graphH = Math.Max(20, h - BarH - statsH - BP * 2);
+            int statsH = _statsPanel?.Visible == true ? StatsHeight : 0;
+            _graphH = Math.Max(20, h - BarHeight - statsH - BorderPad * 2);
 
-            _graph.Bounds      = new Rectangle(BP, BP, w - BP * 2, _graphH);
+            _graph.Bounds = new Rectangle(BorderPad, BorderPad, w - BorderPad * 2, _graphH);
             if (_statsPanel != null)
-                _statsPanel.Bounds = new Rectangle(BP, BP + _graphH + BarH, w - BP * 2, StatsH);
+                _statsPanel.Bounds = new Rectangle(BorderPad, BorderPad + _graphH + BarHeight,
+                                                    w - BorderPad * 2, StatsHeight);
 
-            // Title buttons: top-right of graph area (on top of graph)
-            _btnClose.Location   = new Point(w - BP - BtnSz - 2,     BP + 2);
-            _btnCompact.Location = new Point(w - BP - BtnSz * 2 - 5, BP + 2);
+            _btnClose.Location   = new Point(w - BorderPad - ButtonSize - 2,        BorderPad + 2);
+            _btnCompact.Location = new Point(w - BorderPad - ButtonSize * 2 - 5,    BorderPad + 2);
             _btnClose.BringToFront();
             _btnCompact.BringToFront();
         }
@@ -408,10 +488,10 @@ public sealed class MainForm : Form
 
     private Rectangle SpeedBarRect => _compact
         ? new Rectangle(0, 0, Width, Height)
-        : new Rectangle(0, BP + _graphH, Width, BarH);
+        : new Rectangle(0, BorderPad + _graphH, Width, BarHeight);
 
     private Rectangle GripRect =>
-        new Rectangle(Width - GripSz - 1, Height - GripSz - 1, GripSz, GripSz);
+        new Rectangle(Width - GripSize - 1, Height - GripSize - 1, GripSize, GripSize);
 
     // ── paint ─────────────────────────────────────────────────────────────
 
@@ -421,42 +501,34 @@ public sealed class MainForm : Form
         var g   = e.Graphics;
         var sbr = SpeedBarRect;
 
-        // ── Speed bar background ──────────────────────────────────────────
         g.FillRectangle(_bgBrush, sbr);
-
-        // ── Speed bar content ─────────────────────────────────────────────
         _sb.Paint(g, sbr, _dlBps, _ulBps);
 
         if (!_compact)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            // Separator: graph / speed bar
             using (var sep = new Pen(Color.FromArgb(130, _borderCol), 1f))
-                g.DrawLine(sep, BP, sbr.Top, Width - BP - 1, sbr.Top);
+                g.DrawLine(sep, BorderPad, sbr.Top, Width - BorderPad - 1, sbr.Top);
 
-            // Vertical divider in speed bar
             using (var div = new Pen(Color.FromArgb(100, _borderCol), 1f))
                 g.DrawLine(div, Width / 2, sbr.Top + 5, Width / 2, sbr.Bottom - 5);
 
-            // Separator: speed bar / stats
             if (_statsPanel?.Visible == true)
                 using (var sep = new Pen(Color.FromArgb(130, _borderCol), 1f))
-                    g.DrawLine(sep, BP, _statsPanel.Top, Width - BP - 1, _statsPanel.Top);
+                    g.DrawLine(sep, BorderPad, _statsPanel.Top, Width - BorderPad - 1, _statsPanel.Top);
 
-            // Resize grip dots (only visible when stats not covering the corner)
             if (!_expanded)
                 PaintGripDots(g);
         }
 
-        // ── DU Meter double-border ────────────────────────────────────────
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        using (var hlPath = RoundedRect(2f, 2f, Width - 5f, Height - 5f, CornerR - 1.5f))
+        using (var hlPath = RoundedRect(2f, 2f, Width - 5f, Height - 5f, CornerRadius - 1.5f))
         using (var hlPen  = new Pen(Color.FromArgb(100, 255, 255, 255), 1f))
             g.DrawPath(hlPen, hlPath);
 
-        using (var path = RoundedRect(0.5f, 0.5f, Width - 1.5f, Height - 1.5f, CornerR))
+        using (var path = RoundedRect(0.5f, 0.5f, Width - 1.5f, Height - 1.5f, CornerRadius))
         using (var pen  = new Pen(_borderCol, 2.5f))
             g.DrawPath(pen, path);
     }
@@ -475,24 +547,82 @@ public sealed class MainForm : Form
         base.OnHandleCreated(e);
         UpdateLayout();
         TryDwmRound();
+        if (_settings.HotKeyEnabled) RegisterGlobalHotkey();
+    }
+
+    // ── global hotkey + WndProc ──────────────────────────────────────────
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_ID)
+        {
+            ToggleWindow();
+            return;
+        }
+        if (m.Msg == (int)WmShowNetMon)
+        {
+            if (!Visible) Show();
+            BringToFront();
+            Activate();
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    private void RegisterGlobalHotkey()
+    {
+        if (_hotkeyRegistered || !IsHandleCreated) return;
+        try
+        {
+            if (RegisterHotKey(Handle, HOTKEY_ID, MOD_WIN | MOD_SHIFT, VK_N))
+                _hotkeyRegistered = true;
+            else
+                Debug.WriteLine("RegisterHotKey failed — another app may own Win+Shift+N");
+        }
+        catch (Exception ex) { Debug.WriteLine($"RegisterGlobalHotkey: {ex.Message}"); }
+    }
+
+    private void UnregisterGlobalHotkey()
+    {
+        if (!_hotkeyRegistered) return;
+        try { UnregisterHotKey(Handle, HOTKEY_ID); } catch { }
+        _hotkeyRegistered = false;
     }
 
     // ── region + DWM ─────────────────────────────────────────────────────
 
     private void UpdateRegion()
     {
-        using var path = RoundedRect(0, 0, Width, Height, CornerR);
+        using var path = RoundedRect(0, 0, Width, Height, CornerRadius);
         Region = new Region(path);
     }
 
     private void TryDwmRound()
     {
-        try { int v = 2; DwmSetWindowAttribute(Handle, 33, ref v, 4); }
+        try
+        {
+            int v = DWMWCP_ROUND;
+            DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref v, 4);
+        }
         catch { }
     }
 
+    // ── P/Invoke ──────────────────────────────────────────────────────────
+
     [DllImport("dwmapi.dll", PreserveSig = false)]
     private static extern void DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int v, int sz);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, int vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint RegisterWindowMessage(string lpString);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr h);
 
     // ── background ────────────────────────────────────────────────────────
 
@@ -514,7 +644,7 @@ public sealed class MainForm : Form
     private void ToggleWindow()
     {
         if (Visible) Hide();
-        else { Show(); BringToFront(); }
+        else { Show(); BringToFront(); Activate(); }
     }
 
     // ── context menu ─────────────────────────────────────────────────────
@@ -539,18 +669,26 @@ public sealed class MainForm : Form
             { Checked = AppSettings.IsStartupEnabled(), CheckOnClick = true };
         miStartup.CheckedChanged += (_, _) => _settings.SetStartup(miStartup.Checked);
 
-        var miBg = new ToolStripMenuItem("Change Background…");
-        miBg.Click += (_, _) =>
+        var miStartMin = new ToolStripMenuItem("Start Minimized to Tray")
+            { Checked = _settings.StartMinimized, CheckOnClick = true };
+        miStartMin.CheckedChanged += (_, _) =>
         {
-            using var dlg = new ColorDialog
-                { Color = _settings.BgColor, AnyColor = true, FullOpen = true };
-            if (dlg.ShowDialog(this) == DialogResult.OK)
-            {
-                _settings.BgColor = dlg.Color;
-                _settings.Save();
-                ApplyBackground(dlg.Color);
-            }
+            _settings.StartMinimized = miStartMin.Checked;
+            _settings.Save();
         };
+
+        var miHotkey = new ToolStripMenuItem("Global Hotkey (Win+Shift+N)")
+            { Checked = _settings.HotKeyEnabled, CheckOnClick = true };
+        miHotkey.CheckedChanged += (_, _) =>
+        {
+            _settings.HotKeyEnabled = miHotkey.Checked;
+            _settings.Save();
+            if (miHotkey.Checked) RegisterGlobalHotkey();
+            else                  UnregisterGlobalHotkey();
+        };
+
+        var miBg = new ToolStripMenuItem("Change Background…");
+        miBg.Click += (_, _) => ShowBgDialog();
 
         var miTrans = new ToolStripMenuItem("Set Transparency…");
         miTrans.Click += (_, _) => ShowTransparencyDialog();
@@ -561,6 +699,9 @@ public sealed class MainForm : Form
         var miUsage = new ToolStripMenuItem("View Usage…");
         miUsage.Click += (_, _) => new UsageForm(_store).ShowDialog(this);
 
+        var miAbout = new ToolStripMenuItem("About NetMon…");
+        miAbout.Click += (_, _) => ShowAboutDialog();
+
         var miExit = new ToolStripMenuItem("Exit");
         miExit.Click += (_, _) => BeginInvoke(Application.Exit);
 
@@ -568,22 +709,109 @@ public sealed class MainForm : Form
         {
             miToggle,
             new ToolStripSeparator(),
-            miTop, miStartup, miBg, miTrans,
+            miTop, miStartup, miStartMin, miHotkey, miBg, miTrans,
             new ToolStripSeparator(),
             miLimit, miUsage,
             new ToolStripSeparator(),
-            miExit
+            miAbout, miExit
         });
 
         menu.Opening += (_, _) =>
         {
-            miToggle.Text   = Visible ? "Hide Window" : "Show Window";
+            miToggle.Text     = Visible ? "Hide Window" : "Show Window";
             miStartup.Checked = AppSettings.IsStartupEnabled();
         };
         return menu;
     }
 
     // ── dialogs ───────────────────────────────────────────────────────────
+
+    private void ShowBgDialog()
+    {
+        using var frm = new Form
+        {
+            Text = "Background – NetMon", Size = new Size(340, 200),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition   = FormStartPosition.CenterParent,
+            MaximizeBox = false, MinimizeBox = false,
+            Font = new Font("Segoe UI", 9f)
+        };
+
+        var lbl = new Label
+        {
+            Text = "Pick a preset or choose a custom colour:",
+            AutoSize = true, Location = new Point(12, 12)
+        };
+
+        Color[] presets =
+        {
+            Color.FromArgb(108, 182, 216),   // default cyan-blue
+            Color.FromArgb( 55, 125, 185),   // steel blue
+            Color.FromArgb( 42,  63,  95),   // navy
+            Color.FromArgb( 36,  36,  40),   // dark slate
+            Color.FromArgb(180, 100, 160),   // orchid
+            Color.FromArgb(200, 120,  60),   // amber
+            Color.FromArgb( 85, 160, 100),   // olive green
+            Color.FromArgb(230, 230, 230)    // light gray
+        };
+
+        int sx = 12, sy = 40, sw = 34, sh = 34, gap = 4;
+        Color chosen = _settings.BgColor;
+        var swatches = new List<Panel>();
+
+        for (int i = 0; i < presets.Length; i++)
+        {
+            var p = new Panel
+            {
+                BackColor = presets[i],
+                Size      = new Size(sw, sh),
+                Location  = new Point(sx + i * (sw + gap), sy),
+                Cursor    = Cursors.Hand,
+                BorderStyle = BorderStyle.FixedSingle,
+                Tag       = presets[i]
+            };
+            int iLocal = i;
+            p.Click += (_, _) => { chosen = presets[iLocal]; frm.DialogResult = DialogResult.OK; frm.Close(); };
+            swatches.Add(p);
+            frm.Controls.Add(p);
+        }
+
+        var btnMore = new Button
+        {
+            Text     = "More…",
+            Bounds   = new Rectangle(12, 94, 100, 28),
+            FlatStyle = FlatStyle.System
+        };
+        btnMore.Click += (_, _) =>
+        {
+            using var dlg = new ColorDialog
+                { Color = _settings.BgColor, AnyColor = true, FullOpen = true };
+            if (dlg.ShowDialog(frm) == DialogResult.OK)
+            {
+                chosen = dlg.Color;
+                frm.DialogResult = DialogResult.OK;
+                frm.Close();
+            }
+        };
+
+        var btnCancel = new Button
+        {
+            Text = "Cancel", Bounds = new Rectangle(230, 94, 80, 28),
+            DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.System
+        };
+
+        frm.Controls.Add(lbl);
+        frm.Controls.Add(btnMore);
+        frm.Controls.Add(btnCancel);
+        frm.CancelButton = btnCancel;
+
+        if (frm.ShowDialog(this) == DialogResult.OK)
+        {
+            _settings.BgColor = chosen;
+            _settings.Save();
+            ApplyBackground(chosen);
+        }
+    }
 
     private void ShowTransparencyDialog()
     {
@@ -661,39 +889,104 @@ public sealed class MainForm : Form
         }
     }
 
-    // ── tray icon ────────────────────────────────────────────────────────
+    private void ShowAboutDialog()
+    {
+        var asmName = Assembly.GetExecutingAssembly().GetName();
+        string version = asmName.Version?.ToString(3) ?? "1.0";
+
+        using var frm = new Form
+        {
+            Text = "About NetMon", Size = new Size(360, 220),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false, MinimizeBox = false,
+            Font = new Font("Segoe UI", 9f),
+            BackColor = Color.White
+        };
+
+        var title = new Label
+        {
+            Text = "NetMon",
+            Font = new Font("Segoe UI Semibold", 14f),
+            AutoSize = true,
+            Location = new Point(16, 14),
+            ForeColor = Color.FromArgb(35, 78, 128)
+        };
+        var ver = new Label
+        {
+            Text = $"Version {version}",
+            AutoSize = true,
+            Location = new Point(16, 46),
+            ForeColor = Color.DimGray
+        };
+        var desc = new Label
+        {
+            Text = "Lightweight network bandwidth monitor widget.\n" +
+                   "Inspired by DU Meter. Free and open-source.",
+            AutoSize = false,
+            Bounds = new Rectangle(16, 72, 320, 40)
+        };
+        var link = new LinkLabel
+        {
+            Text = "github.com/aungkokomm/NetMon",
+            AutoSize = true,
+            Location = new Point(16, 118)
+        };
+        link.LinkClicked += (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo("https://github.com/aungkokomm/NetMon") { UseShellExecute = true }); }
+            catch (Exception ex) { Debug.WriteLine($"About link: {ex.Message}"); }
+        };
+        var copy = new Label
+        {
+            Text = "© aungkokomm",
+            AutoSize = true,
+            Location = new Point(16, 144),
+            ForeColor = Color.DimGray,
+            Font = new Font("Segoe UI", 8f)
+        };
+        var ok = new Button
+        {
+            Text = "OK", Bounds = new Rectangle(256, 144, 80, 28),
+            DialogResult = DialogResult.OK, FlatStyle = FlatStyle.System
+        };
+
+        frm.AcceptButton = ok; frm.CancelButton = ok;
+        frm.Controls.AddRange(new Control[] { title, ver, desc, link, copy, ok });
+        frm.ShowDialog(this);
+    }
+
+    // ── tray icon (HiDPI) ────────────────────────────────────────────────
 
     private static Icon BuildTrayIcon()
     {
-        using var bmp = new Bitmap(16, 16, PixelFormat.Format32bppArgb);
+        const int S = 32;
+        using var bmp = new Bitmap(S, S, PixelFormat.Format32bppArgb);
         using var g   = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(Color.Transparent);
 
-        using var bgPath  = RoundedRect(1, 1, 14, 14, 3);
+        using var bgPath  = RoundedRect(2, 2, S - 4, S - 4, 6);
         using var bgBrush = new SolidBrush(Color.FromArgb(35, 105, 182));
         g.FillPath(bgBrush, bgPath);
 
         PointF[] pts =
         {
-            new(2, 12), new(4, 9), new(6, 11),
-            new(8,  6), new(10, 8), new(12, 5), new(14, 7)
+            new( 4, 24), new( 8, 18), new(12, 22),
+            new(16, 12), new(20, 16), new(24, 10), new(28, 14)
         };
-        using var lp = new Pen(Color.FromArgb(235, 255, 255, 255), 1.4f)
+        using var lp = new Pen(Color.FromArgb(235, 255, 255, 255), 2.8f)
             { LineJoin = LineJoin.Round };
         g.DrawLines(lp, pts);
 
         using var dot = new SolidBrush(Color.FromArgb(95, 215, 70));
-        g.FillEllipse(dot, 12, 2, 3, 3);
+        g.FillEllipse(dot, 24, 4, 5, 5);
 
         var hIcon = bmp.GetHicon();
         var icon  = (Icon)Icon.FromHandle(hIcon).Clone();
         DestroyIcon(hIcon);
         return icon;
     }
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr h);
 
     // ── GDI path helper ───────────────────────────────────────────────────
 
@@ -708,7 +1001,7 @@ public sealed class MainForm : Form
         return p;
     }
 
-    // ── public format helpers (used by StatsPanel) ────────────────────────
+    // ── public format helpers (used by StatsPanel / UsageForm) ────────────
 
     public static string FormatSpeed(long bps)
     {
@@ -738,10 +1031,11 @@ public sealed class MainForm : Form
 
     private sealed class SpeedBarPainter : IDisposable
     {
-        private readonly Font       _font    = new("Tahoma", 9.5f);
-        private readonly SolidBrush _dlBrush = new(Color.FromArgb(0,   155,  40));
-        private readonly SolidBrush _ulBrush = new(Color.FromArgb(205,  45,  10));
-        private readonly SolidBrush _white   = new(Color.White);
+        private readonly Font       _font      = new("Tahoma", 9.5f);
+        private readonly Font       _fontSmall = new("Tahoma", 8f);
+        private readonly SolidBrush _dlBrush   = new(Color.FromArgb(0,   155,  40));
+        private readonly SolidBrush _ulBrush   = new(Color.FromArgb(205,  45,  10));
+        private readonly SolidBrush _white     = new(Color.White);
 
         public void Paint(Graphics g, Rectangle r, long dlBps, long ulBps)
         {
@@ -750,7 +1044,7 @@ public sealed class MainForm : Form
 
             int half = r.Width / 2;
             PaintHalf(g, _dlBrush, FormatSpeed(dlBps), isDown: true,
-                      r.X,        r.Y, half,          r.Height);
+                      r.X,        r.Y, half,           r.Height);
             PaintHalf(g, _ulBrush, FormatSpeed(ulBps), isDown: false,
                       r.X + half, r.Y, r.Width - half, r.Height);
         }
@@ -770,10 +1064,20 @@ public sealed class MainForm : Form
             DrawArrow(g, _white, bdgX + bdgW / 2, cy, isDown);
 
             float tx = bdgX + bdgW + 6;
-            float tw = sw - (tx - sx) - 4;
-            using var sf = new StringFormat { LineAlignment = StringAlignment.Center };
-            g.DrawString(text, _font, brush,
-                new RectangleF(tx, sy, Math.Max(0, tw), sh), sf);
+            float tw = Math.Max(0, sw - (tx - sx) - 4);
+
+            // Auto-shrink if the primary font overflows
+            Font useFont = _font;
+            var meas = g.MeasureString(text, _font);
+            if (meas.Width > tw) useFont = _fontSmall;
+
+            using var sf = new StringFormat
+            {
+                LineAlignment = StringAlignment.Center,
+                Trimming      = StringTrimming.EllipsisCharacter,
+                FormatFlags   = StringFormatFlags.NoWrap
+            };
+            g.DrawString(text, useFont, brush, new RectangleF(tx, sy, tw, sh), sf);
         }
 
         private static GraphicsPath BadgePath(int x, int y, int w, int h, int r)
@@ -810,8 +1114,8 @@ public sealed class MainForm : Form
 
         public void Dispose()
         {
-            _font.Dispose(); _dlBrush.Dispose();
-            _ulBrush.Dispose(); _white.Dispose();
+            _font.Dispose(); _fontSmall.Dispose();
+            _dlBrush.Dispose(); _ulBrush.Dispose(); _white.Dispose();
         }
     }
 
@@ -821,8 +1125,8 @@ public sealed class MainForm : Form
     {
         private bool   _hov;
         private string _sym;
-        private readonly Color  _hoverCol;
-        private readonly Font   _font = new("Tahoma", 9f, FontStyle.Bold);
+        private readonly Color _hoverCol;
+        private readonly Font  _font = new("Tahoma", 9f, FontStyle.Bold);
 
         public string Symbol { get => _sym; set { _sym = value; Invalidate(); } }
 
@@ -834,7 +1138,7 @@ public sealed class MainForm : Form
                      ControlStyles.UserPaint            |
                      ControlStyles.OptimizedDoubleBuffer |
                      ControlStyles.SupportsTransparentBackColor, true);
-            Size      = new Size(BtnSz, BtnSz);
+            Size      = new Size(ButtonSize, ButtonSize);
             BackColor = Color.Transparent;
             Cursor    = Cursors.Hand;
         }

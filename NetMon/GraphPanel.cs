@@ -58,6 +58,19 @@ public sealed class GraphPanel : Control
     /// <summary>Small informational line painted in the graph top-left (e.g. "Today 12.4 MB").</summary>
     public string TopInfo { get; set; } = "";
 
+    /// <summary>Alpha channel (0–255) for the area fills under the download / upload lines.</summary>
+    public int FillAlpha
+    {
+        get => _dlFill.Color.A;
+        set
+        {
+            int a = Math.Clamp(value, 20, 220);
+            _dlFill.Color = Color.FromArgb(a, DlLine);
+            _ulFill.Color = Color.FromArgb(a, UlLine);
+            Invalidate();
+        }
+    }
+
     // ── constructor ───────────────────────────────────────────────────────
 
     public GraphPanel()

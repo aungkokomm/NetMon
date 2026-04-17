@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -16,14 +17,24 @@ public sealed class UsageData
 }
 
 /// <summary>
-/// Persists daily and monthly bandwidth usage in a JSON file at
-/// %AppData%\NetMon\usage.json.  Thread-safe.
+/// Persists daily and monthly bandwidth usage to %AppData%\NetMon\usage.json.
+///
+/// Writes are batched: in-memory deltas are accumulated on every Add() but
+/// flushed to disk at most once per <see cref="FlushIntervalSec"/> seconds,
+/// and always on Flush() / Dispose().  Writes are atomic — data is written
+/// to a .tmp file and then renamed over the real file, so a crash or power
+/// loss mid-write cannot corrupt existing history.
 /// </summary>
-public sealed class UsageStore
+public sealed class UsageStore : IDisposable
 {
+    private const int FlushIntervalSec = 30;
+
     private readonly string    _path;
-    private          UsageData _data;
+    private readonly string    _tmpPath;
     private readonly object    _lock = new();
+    private          UsageData _data;
+    private          DateTime  _lastFlush = DateTime.UtcNow;
+    private          bool      _dirty;
 
     private static readonly JsonSerializerOptions JsonOpts =
         new() { WriteIndented = true };
@@ -33,16 +44,23 @@ public sealed class UsageStore
         _path = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "NetMon", "usage.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        _tmpPath = _path + ".tmp";
+
+        try { Directory.CreateDirectory(Path.GetDirectoryName(_path)!); }
+        catch (Exception ex) { Debug.WriteLine($"UsageStore: mkdir failed: {ex.Message}"); }
+
         _data = Load();
     }
+
+    // ── public API ────────────────────────────────────────────────────────
 
     public void Add(long bytesDown, long bytesUp)
     {
         lock (_lock)
         {
-            string dayKey   = DateTime.Today.ToString("yyyy-MM-dd");
-            string monthKey = DateTime.Today.ToString("yyyy-MM");
+            var now = DateTime.Now;
+            string dayKey   = now.ToString("yyyy-MM-dd");
+            string monthKey = now.ToString("yyyy-MM");
 
             if (!_data.Daily.TryGetValue(dayKey, out var day))
                 _data.Daily[dayKey] = day = new DayUsage();
@@ -54,7 +72,11 @@ public sealed class UsageStore
             mon.BytesReceived += bytesDown;
             mon.BytesSent     += bytesUp;
 
-            SaveLocked();
+            _dirty = true;
+
+            // Throttled flush — at most once every FlushIntervalSec
+            if ((DateTime.UtcNow - _lastFlush).TotalSeconds >= FlushIntervalSec)
+                FlushLocked();
         }
     }
 
@@ -62,8 +84,8 @@ public sealed class UsageStore
     {
         lock (_lock)
         {
-            _data.Daily.TryGetValue(DateTime.Today.ToString("yyyy-MM-dd"), out var d);
-            return d ?? new DayUsage();
+            _data.Daily.TryGetValue(DateTime.Now.ToString("yyyy-MM-dd"), out var d);
+            return Clone(d);
         }
     }
 
@@ -71,22 +93,45 @@ public sealed class UsageStore
     {
         lock (_lock)
         {
-            _data.Monthly.TryGetValue(DateTime.Today.ToString("yyyy-MM"), out var m);
-            return m ?? new DayUsage();
+            _data.Monthly.TryGetValue(DateTime.Now.ToString("yyyy-MM"), out var m);
+            return Clone(m);
         }
     }
 
+    /// <summary>Returns a deep copy of all usage history.</summary>
     public UsageData Snapshot()
     {
         lock (_lock)
         {
-            // Return a deep copy so callers can read freely
-            var json = JsonSerializer.Serialize(_data, JsonOpts);
-            return JsonSerializer.Deserialize<UsageData>(json)!;
+            var snap = new UsageData();
+            foreach (var kv in _data.Daily)   snap.Daily[kv.Key]   = Clone(kv.Value);
+            foreach (var kv in _data.Monthly) snap.Monthly[kv.Key] = Clone(kv.Value);
+            return snap;
         }
     }
 
+    /// <summary>Erase all stored usage history and flush immediately.</summary>
+    public void Clear()
+    {
+        lock (_lock)
+        {
+            _data  = new UsageData();
+            _dirty = true;
+            FlushLocked();
+        }
+    }
+
+    /// <summary>Force a flush — used on shutdown and after destructive ops.</summary>
+    public void Flush() { lock (_lock) FlushLocked(); }
+
+    public void Dispose() => Flush();
+
     // ── private ────────────────────────────────────────────────────────────
+
+    private static DayUsage Clone(DayUsage? src) =>
+        src is null
+            ? new DayUsage()
+            : new DayUsage { BytesReceived = src.BytesReceived, BytesSent = src.BytesSent };
 
     private UsageData Load()
     {
@@ -98,13 +143,25 @@ public sealed class UsageStore
                 return JsonSerializer.Deserialize<UsageData>(text) ?? new UsageData();
             }
         }
-        catch { /* corrupt file – start fresh */ }
+        catch (Exception ex) { Debug.WriteLine($"UsageStore: load failed, starting fresh: {ex.Message}"); }
         return new UsageData();
     }
 
-    private void SaveLocked() // must be called inside _lock
+    /// <summary>Atomic write. Must be called inside _lock.</summary>
+    private void FlushLocked()
     {
-        try { File.WriteAllText(_path, JsonSerializer.Serialize(_data, JsonOpts)); }
-        catch { /* disk full etc. – skip this tick */ }
+        if (!_dirty) return;
+        try
+        {
+            File.WriteAllText(_tmpPath, JsonSerializer.Serialize(_data, JsonOpts));
+            File.Move(_tmpPath, _path, overwrite: true);
+            _dirty     = false;
+            _lastFlush = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"UsageStore: flush failed: {ex.Message}");
+            try { if (File.Exists(_tmpPath)) File.Delete(_tmpPath); } catch { }
+        }
     }
 }
