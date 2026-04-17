@@ -44,41 +44,48 @@ public sealed class UsageForm : Form
         var bottomBar = new Panel
         {
             Dock      = DockStyle.Bottom,
-            Height    = 44,
-            BackColor = Color.FromArgb(240, 248, 255)
+            Height    = 54,
+            BackColor = Color.FromArgb(240, 248, 255),
+            Padding   = new Padding(12, 10, 12, 10)
         };
 
         var btnExport = new Button
         {
-            Text     = "Export CSV…",
-            Size     = new Size(100, 28),
-            Location = new Point(10, 8),
-            FlatStyle = FlatStyle.System
+            Text      = "Export CSV…",
+            AutoSize  = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(120, 32),
+            Location  = new Point(12, 11),
+            FlatStyle = FlatStyle.System,
+            Padding   = new Padding(8, 0, 8, 0)
         };
         btnExport.Click += (_, _) => ExportCsv();
 
         var btnReset = new Button
         {
-            Text      = "Reset Data…",
-            Size      = new Size(100, 28),
-            Location  = new Point(118, 8),
-            ForeColor = Color.FromArgb(170, 40, 30),
-            FlatStyle = FlatStyle.System
+            Text         = "Reset Data…",
+            AutoSize     = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize  = new Size(120, 32),
+            Location     = new Point(142, 11),
+            ForeColor    = Color.FromArgb(170, 40, 30),
+            FlatStyle    = FlatStyle.System,
+            Padding      = new Padding(8, 0, 8, 0)
         };
         btnReset.Click += (_, _) => ResetData();
 
         var btnClose = new Button
         {
             Text         = "Close",
-            Size         = new Size(90, 28),
+            Size         = new Size(100, 32),
             Anchor       = AnchorStyles.Top | AnchorStyles.Right,
             DialogResult = DialogResult.Cancel,
             FlatStyle    = FlatStyle.System,
-            Location     = new Point(bottomBar.Width - 100, 8)
+            Location     = new Point(bottomBar.Width - 112, 11)
         };
         btnClose.Click += (_, _) => Close();
         CancelButton = btnClose;
-        bottomBar.Resize += (_, _) => btnClose.Location = new Point(bottomBar.Width - 100, 8);
+        bottomBar.Resize += (_, _) => btnClose.Location = new Point(bottomBar.Width - 112, 11);
 
         bottomBar.Controls.Add(btnExport);
         bottomBar.Controls.Add(btnReset);
