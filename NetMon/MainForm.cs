@@ -775,12 +775,17 @@ public sealed class MainForm : Form
     {
         using var frm = new Form
         {
-            Text = "Background – NetMon", Size = new Size(340, 200),
+            Text            = "Background – NetMon",
+            ClientSize      = new Size(340, 164),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition   = FormStartPosition.CenterParent,
-            MaximizeBox = false, MinimizeBox = false,
-            Font = new Font("Segoe UI", 9f)
+            MaximizeBox     = false, MinimizeBox = false,
+            ShowInTaskbar   = false,
+            Font            = new Font("Segoe UI", 9f),
+            BackColor       = Color.White
         };
+        var _bgIcon = LoadAppIcon();
+        if (_bgIcon != null) frm.Icon = _bgIcon;
 
         var lbl = new Label
         {
@@ -861,37 +866,87 @@ public sealed class MainForm : Form
 
     private void ShowTransparencyDialog()
     {
+        const int W = 380, H = 170;
+        const int Pad = 16, BtnW = 92, BtnH = 32, BtnGap = 8;
+
         using var frm = new Form
         {
-            Text = "Transparency – NetMon", Size = new Size(300, 130),
+            Text            = "Transparency – NetMon",
+            ClientSize      = new Size(W, H),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition   = FormStartPosition.CenterParent,
-            MaximizeBox = false, MinimizeBox = false
+            MaximizeBox     = false, MinimizeBox = false,
+            ShowInTaskbar   = false,
+            Font            = new Font("Segoe UI", 9.5f),
+            BackColor       = Color.White
         };
-        var lbl    = new Label  { Text = "Window opacity:", AutoSize = true,
-                                  Location = new Point(12, 14),
-                                  Font = new Font("Tahoma", 8.5f) };
-        var lblPct = new Label  { Text = $"{(int)(Opacity * 100)}%", AutoSize = true,
-                                  Location = new Point(232, 14),
-                                  Font = new Font("Tahoma", 8.5f) };
+        var appIcon = LoadAppIcon();
+        if (appIcon != null) frm.Icon = appIcon;
+
+        var lbl = new Label
+        {
+            Text     = "Window opacity",
+            AutoSize = true,
+            Location = new Point(Pad, 14),
+            Font     = new Font("Segoe UI Semibold", 10f)
+        };
+        var lblPct = new Label
+        {
+            Text      = $"{(int)(Opacity * 100)}%",
+            AutoSize  = true,
+            Font      = new Font("Segoe UI Semibold", 11f),
+            ForeColor = Color.FromArgb(35, 105, 182)
+        };
+        // Right-align the percentage label
+        lblPct.Location = new Point(W - Pad - 60, 13);
+
         var tb = new TrackBar
         {
-            Minimum = 20, Maximum = 100, TickFrequency = 10,
-            Value   = (int)(Opacity * 100),
-            Bounds  = new Rectangle(12, 34, 266, 30)
+            Minimum       = 20, Maximum = 100, TickFrequency = 10,
+            Value         = (int)(Opacity * 100),
+            Bounds        = new Rectangle(Pad, 44, W - Pad * 2, 40)
         };
-        var ok     = new Button { Text = "OK",     DialogResult = DialogResult.OK,
-                                  Bounds = new Rectangle(100, 74, 80, 28),
-                                  Font = new Font("Tahoma", 8.5f) };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel,
-                                  Bounds = new Rectangle(192, 74, 80, 28),
-                                  Font = new Font("Tahoma", 8.5f) };
 
         double prev = Opacity;
-        tb.ValueChanged += (_, _) => { Opacity = tb.Value / 100.0; lblPct.Text = $"{tb.Value}%"; };
+        tb.ValueChanged += (_, _) =>
+        {
+            Opacity       = tb.Value / 100.0;
+            lblPct.Text   = $"{tb.Value}%";
+        };
+
+        // Footer button row — Apply (left), then OK / Cancel (right)
+        int bY = H - BtnH - 16;
+
+        var apply = new Button
+        {
+            Text      = "Apply",
+            Bounds    = new Rectangle(Pad, bY, BtnW, BtnH),
+            FlatStyle = FlatStyle.System
+        };
+        apply.Click += (_, _) =>
+        {
+            _settings.Opacity = tb.Value / 100.0;
+            _settings.Save();
+            prev = _settings.Opacity;    // committed — Cancel now restores this
+        };
+
+        var cancel = new Button
+        {
+            Text         = "Cancel",
+            Bounds       = new Rectangle(W - Pad - BtnW, bY, BtnW, BtnH),
+            DialogResult = DialogResult.Cancel,
+            FlatStyle    = FlatStyle.System
+        };
+        var ok = new Button
+        {
+            Text         = "OK",
+            Bounds       = new Rectangle(W - Pad - BtnW * 2 - BtnGap, bY, BtnW, BtnH),
+            DialogResult = DialogResult.OK,
+            FlatStyle    = FlatStyle.System
+        };
 
         frm.AcceptButton = ok; frm.CancelButton = cancel;
-        frm.Controls.AddRange(new Control[] { lbl, lblPct, tb, ok, cancel });
+        frm.Controls.AddRange(new Control[] { lbl, lblPct, tb, apply, ok, cancel });
 
         if (ShowDialogSafe(frm) == DialogResult.OK)
         {
@@ -903,30 +958,72 @@ public sealed class MainForm : Form
 
     private void ShowLimitDialog()
     {
+        const int W = 420, H = 200;
+        const int Pad = 18, BtnW = 100, BtnH = 32, BtnGap = 8;
+
         using var frm = new Form
         {
-            Text = "Monthly Limit – NetMon", Size = new Size(310, 140),
+            Text            = "Monthly Limit – NetMon",
+            ClientSize      = new Size(W, H),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition   = FormStartPosition.CenterParent,
-            MaximizeBox = false, MinimizeBox = false
+            MaximizeBox     = false, MinimizeBox = false,
+            ShowInTaskbar   = false,
+            Font            = new Font("Segoe UI", 9.5f),
+            BackColor       = Color.White
         };
-        var lbl = new Label { Text = "Monthly data limit in GB  (0 = disabled):",
-                              AutoSize = false, Bounds = new Rectangle(12, 14, 280, 20),
-                              Font = new Font("Tahoma", 8.5f) };
+        var appIcon = LoadAppIcon();
+        if (appIcon != null) frm.Icon = appIcon;
+
+        var hdr = new Label
+        {
+            Text     = "Monthly data limit",
+            Font     = new Font("Segoe UI Semibold", 11.5f),
+            AutoSize = true,
+            Location = new Point(Pad, 16)
+        };
+        var sub = new Label
+        {
+            Text      = "Sets the monthly data cap shown in the stats panel. " +
+                        "Enter 0 to disable.",
+            Bounds    = new Rectangle(Pad, 44, W - Pad * 2, 36),
+            ForeColor = Color.FromArgb(100, 100, 100)
+        };
         var num = new NumericUpDown
         {
-            Bounds = new Rectangle(12, 40, 140, 26),
+            Bounds        = new Rectangle(Pad, 92, 150, 30),
             DecimalPlaces = 1, Increment = 10,
-            Maximum = 100_000, Minimum = 0,
-            Value   = (decimal)_settings.MonthlyLimitGB,
-            Font    = new Font("Tahoma", 9f)
+            Maximum       = 100_000, Minimum = 0,
+            Value         = (decimal)_settings.MonthlyLimitGB,
+            Font          = new Font("Segoe UI", 11f),
+            TextAlign     = HorizontalAlignment.Right
         };
-        var ok     = new Button { Text = "OK",     Bounds = new Rectangle(115, 76, 80, 28),
-                                  DialogResult = DialogResult.OK,     Font = num.Font };
-        var cancel = new Button { Text = "Cancel", Bounds = new Rectangle(204, 76, 80, 28),
-                                  DialogResult = DialogResult.Cancel, Font = num.Font };
+        var unit = new Label
+        {
+            Text      = "GB  /  month",
+            AutoSize  = true,
+            Location  = new Point(Pad + 158, 98),
+            ForeColor = Color.FromArgb(100, 100, 100)
+        };
+
+        int bY = H - BtnH - 18;
+        var ok = new Button
+        {
+            Text         = "Save",
+            Bounds       = new Rectangle(W - Pad - BtnW * 2 - BtnGap, bY, BtnW, BtnH),
+            DialogResult = DialogResult.OK,
+            FlatStyle    = FlatStyle.System
+        };
+        var cancel = new Button
+        {
+            Text         = "Cancel",
+            Bounds       = new Rectangle(W - Pad - BtnW, bY, BtnW, BtnH),
+            DialogResult = DialogResult.Cancel,
+            FlatStyle    = FlatStyle.System
+        };
+
         frm.AcceptButton = ok; frm.CancelButton = cancel;
-        frm.Controls.AddRange(new Control[] { lbl, num, ok, cancel });
+        frm.Controls.AddRange(new Control[] { hdr, sub, num, unit, ok, cancel });
 
         if (ShowDialogSafe(frm) == DialogResult.OK)
         {
@@ -940,8 +1037,9 @@ public sealed class MainForm : Form
         var asmName    = Assembly.GetExecutingAssembly().GetName();
         string version = asmName.Version?.ToString(3) ?? "1.0";
 
-        const int W = 440, H = 310;
-        const int Pad = 20, BtnW = 120, BtnH = 32, BtnGap = 10;
+        const int W = 480, H = 360;
+        const int Pad = 22, BtnW = 130, BtnH = 34, BtnGap = 10;
+        const int HdrH = 120;          // tall enough for 18pt + 10pt stacked
 
         using var frm = new Form
         {
@@ -957,83 +1055,73 @@ public sealed class MainForm : Form
         var appIcon = LoadAppIcon();
         if (appIcon != null) frm.Icon = appIcon;
 
-        // Blue header strip with icon + product name
-        const int HdrH = 86;
+        // ── Blue header (owner-drawn, with icon + title + version) ─────
         var header = new Panel
         {
             Bounds    = new Rectangle(0, 0, W, HdrH),
             BackColor = Color.FromArgb(35, 105, 182)
         };
-        // Paint a subtle vertical gradient on the header
         header.Paint += (_, pe) =>
         {
+            var g = pe.Graphics;
             using var grad = new LinearGradientBrush(
                 header.ClientRectangle,
-                Color.FromArgb( 50, 130, 210),
+                Color.FromArgb( 55, 135, 215),
                 Color.FromArgb( 20,  80, 150),
                 LinearGradientMode.Vertical);
-            pe.Graphics.FillRectangle(grad, header.ClientRectangle);
-        };
+            g.FillRectangle(grad, header.ClientRectangle);
 
-        if (appIcon != null)
-        {
-            var iconBox = new PictureBox
+            g.SmoothingMode     = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            int textX = Pad;
+            if (appIcon != null)
             {
-                Image       = appIcon.ToBitmap(),
-                SizeMode    = PictureBoxSizeMode.Zoom,
-                Bounds      = new Rectangle(Pad, (HdrH - 56) / 2, 56, 56),
-                BackColor   = Color.Transparent
-            };
-            header.Controls.Add(iconBox);
-        }
+                using var ib = appIcon.ToBitmap();
+                g.DrawImage(ib, Pad, (HdrH - 72) / 2, 72, 72);
+                textX = Pad + 72 + 18;
+            }
 
-        var title = new Label
-        {
-            Text      = "NetMon",
-            Font      = new Font("Segoe UI Semibold", 18f),
-            AutoSize  = true,
-            ForeColor = Color.White,
-            BackColor = Color.Transparent,
-            Location  = new Point(appIcon != null ? Pad + 68 : Pad, 14)
-        };
-        var sub = new Label
-        {
-            Text      = $"Version {version}",
-            Font      = new Font("Segoe UI", 9.5f),
-            AutoSize  = true,
-            ForeColor = Color.FromArgb(210, 230, 255),
-            BackColor = Color.Transparent,
-            Location  = new Point(appIcon != null ? Pad + 68 : Pad, 48)
-        };
-        header.Controls.Add(title);
-        header.Controls.Add(sub);
+            using var titleFont = new Font("Segoe UI Semibold", 20f);
+            using var verFont   = new Font("Segoe UI",           10.5f);
+            var titleSize = g.MeasureString("NetMon", titleFont);
+            var verSize   = g.MeasureString($"Version {version}", verFont);
 
-        // Body text
+            float stackHeight = titleSize.Height + verSize.Height + 2;
+            float topY        = (HdrH - stackHeight) / 2f;
+
+            using var titleBrush = new SolidBrush(Color.White);
+            using var verBrush   = new SolidBrush(Color.FromArgb(215, 235, 255));
+            g.DrawString("NetMon",             titleFont, titleBrush, textX, topY);
+            g.DrawString($"Version {version}", verFont,   verBrush,   textX, topY + titleSize.Height + 2);
+        };
+
+        // ── Body text ──────────────────────────────────────────────────
         var desc = new Label
         {
             Text =
                 "A lightweight, always-visible network bandwidth monitor.\n" +
                 "Inspired by DU Meter. Free and open-source — forever.",
-            Bounds    = new Rectangle(Pad, HdrH + 16, W - Pad * 2, 42),
+            Bounds    = new Rectangle(Pad, HdrH + 22, W - Pad * 2, 42),
             ForeColor = Color.FromArgb(40, 40, 40)
         };
 
         var linkLbl = new Label
         {
-            Text      = "Project home:",
+            Text      = "Project home",
             AutoSize  = true,
-            Location  = new Point(Pad, HdrH + 66),
-            ForeColor = Color.FromArgb(90, 90, 90)
+            Location  = new Point(Pad, HdrH + 76),
+            ForeColor = Color.FromArgb(100, 100, 100)
         };
         var link = new LinkLabel
         {
-            Text          = "github.com/aungkokomm/NetMon",
-            AutoSize      = true,
-            Location      = new Point(Pad + 88, HdrH + 66),
-            LinkColor     = Color.FromArgb(35, 105, 182),
-            ActiveLinkColor = Color.FromArgb(210, 50, 30),
+            Text             = "github.com/aungkokomm/NetMon",
+            AutoSize         = true,
+            Location         = new Point(Pad + 88, HdrH + 76),
+            LinkColor        = Color.FromArgb(35, 105, 182),
+            ActiveLinkColor  = Color.FromArgb(210, 50, 30),
             VisitedLinkColor = Color.FromArgb(35, 105, 182),
-            LinkBehavior  = LinkBehavior.HoverUnderline
+            LinkBehavior     = LinkBehavior.HoverUnderline
         };
         link.LinkClicked += (_, _) => OpenUrl("https://github.com/aungkokomm/NetMon");
 
@@ -1041,13 +1129,13 @@ public sealed class MainForm : Form
         {
             Text      = "© 2026 aungkokomm · MIT License",
             AutoSize  = true,
-            Location  = new Point(Pad, HdrH + 92),
+            Location  = new Point(Pad, HdrH + 104),
             ForeColor = Color.FromArgb(130, 130, 130),
             Font      = new Font("Segoe UI", 8.5f)
         };
 
-        // Footer button bar
-        const int FooterH = 56;
+        // ── Footer with real buttons ───────────────────────────────────
+        const int FooterH = 62;
         var footer = new Panel
         {
             Bounds    = new Rectangle(0, H - FooterH, W, FooterH),
@@ -1059,8 +1147,8 @@ public sealed class MainForm : Form
             pe.Graphics.DrawLine(pen, 0, 0, footer.Width, 0);
         };
 
-        // Buttons right-aligned in the footer
         int bY = (FooterH - BtnH) / 2;
+
         var okBtn = new Button
         {
             Text         = "Close",
