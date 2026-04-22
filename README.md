@@ -7,6 +7,8 @@ NetMon is a minimalist, high-performance network monitoring widget designed for 
 ---
 <img width="371" height="133" alt="image" src="https://github.com/user-attachments/assets/96538715-b5ee-4446-9d60-929d5e09b2d2" />
 
+![Stars](https://img.shields.io/github/stars/aungkokomm/NetMon?style=for-the-badge&color=blue)
+![Downloads](https://img.shields.io/github/downloads/aungkokomm/NetMon/total?style=for-the-badge&color=brightgreen)
 
 ## Features
 
