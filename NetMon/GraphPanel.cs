@@ -22,14 +22,15 @@ public sealed class GraphPanel : Control
     private const float MinScale = 2048f;
     private const int   YAxisW   = 26;   // left label strip
 
-    private static readonly Color BgColor   = Color.FromArgb(238, 248, 255);
-    private static readonly Color YAxisBg   = Color.FromArgb(216, 236, 252);
-    private static readonly Color GridColor = Color.FromArgb(148, 196, 226);
-    private static readonly Color LabelCol  = Color.FromArgb(55,  105, 150);
-    private static readonly Color DlLine    = Color.FromArgb(0,   160,  50);
-    private static readonly Color DlFill    = Color.FromArgb(85,    0, 160, 50);
-    private static readonly Color UlLine    = Color.FromArgb(200,  40,  40);
-    private static readonly Color UlFill    = Color.FromArgb(85,  200,  40, 40);
+    // Fluent-leaning palette: blue download / green upload, lighter grid
+    private static readonly Color BgColor   = Color.FromArgb(244, 249, 254);
+    private static readonly Color YAxisBg   = Color.FromArgb(225, 238, 250);
+    private static readonly Color GridColor = Color.FromArgb(190, 215, 235);
+    private static readonly Color LabelCol  = Color.FromArgb( 60, 100, 145);
+    private static readonly Color DlLine    = Color.FromArgb( 59, 130, 246);   // Fluent blue
+    private static readonly Color DlFill    = Color.FromArgb( 90,  59, 130, 246);
+    private static readonly Color UlLine    = Color.FromArgb( 16, 185, 129);   // Fluent green
+    private static readonly Color UlFill    = Color.FromArgb( 90,  16, 185, 129);
 
     // ── cached GDI ────────────────────────────────────────────────────────
     private readonly Pen        _dlPen;
@@ -80,8 +81,8 @@ public sealed class GraphPanel : Control
                  ControlStyles.OptimizedDoubleBuffer, true);
         BackColor = BgColor;
 
-        _dlPen   = new Pen(DlLine, 1.4f) { LineJoin = LineJoin.Round };
-        _ulPen   = new Pen(UlLine, 1.4f) { LineJoin = LineJoin.Round };
+        _dlPen   = new Pen(DlLine, 1.6f) { LineJoin = LineJoin.Round };
+        _ulPen   = new Pen(UlLine, 1.6f) { LineJoin = LineJoin.Round };
         _gridPen = new Pen(GridColor, 1f) { DashStyle = DashStyle.Dot };
         _axisPen = new Pen(GridColor, 1f);
         _dlFill  = new SolidBrush(DlFill);
