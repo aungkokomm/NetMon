@@ -8,7 +8,7 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define MyAppName        "NetMon"
-#define MyAppVersion     "1.5"
+#define MyAppVersion     "1.5.1"
 #define MyAppPublisher   "NetMon"
 #define MyAppExeName     "NetMon.exe"
 #define MyPublishDir     "NetMon\bin\Release\net8.0-windows\win-x64\publish"

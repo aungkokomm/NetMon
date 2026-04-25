@@ -27,10 +27,11 @@ public sealed class GraphPanel : Control
     private static readonly Color YAxisBg   = Color.FromArgb(225, 238, 250);
     private static readonly Color GridColor = Color.FromArgb(190, 215, 235);
     private static readonly Color LabelCol  = Color.FromArgb( 60, 100, 145);
-    private static readonly Color DlLine    = Color.FromArgb( 59, 130, 246);   // Fluent blue
-    private static readonly Color DlFill    = Color.FromArgb( 90,  59, 130, 246);
-    private static readonly Color UlLine    = Color.FromArgb( 16, 185, 129);   // Fluent green
-    private static readonly Color UlFill    = Color.FromArgb( 90,  16, 185, 129);
+    // Convention: green = download, red = upload
+    private static readonly Color DlLine    = Color.FromArgb(  0, 160,  50);
+    private static readonly Color DlFill    = Color.FromArgb( 90,   0, 160,  50);
+    private static readonly Color UlLine    = Color.FromArgb(210,  50,  35);
+    private static readonly Color UlFill    = Color.FromArgb( 90, 210,  50,  35);
 
     // ── cached GDI ────────────────────────────────────────────────────────
     private readonly Pen        _dlPen;
