@@ -27,8 +27,8 @@ public sealed class MainForm : Form
     private const int StatsHeight        = 118;
     private const int DefaultWidth       = 300;
     private const int DefaultGraphHeight = 70;
-    private const int CornerRadius       = 10;
-    private const int ButtonSize         = 15;
+    private const int CornerRadius       = 12;
+    private const int ButtonSize         = 16;
     private const int GripSize           = 15;
     private const int SnapDistance       = 12;
 
@@ -37,7 +37,9 @@ public sealed class MainForm : Form
 
     // ── DWM / Win32 named constants ───────────────────────────────────────
     private const int  DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    private const int  DWMWA_SYSTEMBACKDROP_TYPE      = 38;     // Win11 22621+
     private const int  DWMWCP_ROUND                   = 2;
+    private const int  DWMSBT_MAINWINDOW              = 2;      // Mica
     private const int  WM_HOTKEY                      = 0x0312;
     private const uint MOD_SHIFT                      = 0x0004;
     private const uint MOD_WIN                        = 0x0008;
@@ -85,8 +87,12 @@ public sealed class MainForm : Form
     private Point    _dragFormOrigin;
     private Size     _dragOrigSize;
 
-    // ── cached GDI for form-level painting ────────────────────────────────
-    private SolidBrush _bgBrush;
+    // ── cached GDI for form-level painting (rebuilt on size/bg change) ────
+    private LinearGradientBrush? _bgGradBrush;
+    private GraphicsPath?        _outerPath;
+    private GraphicsPath?        _highlightPath;
+    private Size                 _lastPaintedSize;
+    private bool                 _resizing;
 
     // ── constructor ───────────────────────────────────────────────────────
 
@@ -97,7 +103,6 @@ public sealed class MainForm : Form
         _monitor     = new NetworkMonitor();
         _savedFullH  = DefaultFullHeight;
         _sb          = new SpeedBarPainter();
-        _bgBrush     = new SolidBrush(_settings.BgColor);
 
         // ─ form ──────────────────────────────────────────────────────────
         Text            = "NetMon";
@@ -106,6 +111,12 @@ public sealed class MainForm : Form
         MinimumSize     = new Size(180, 50);
         DoubleBuffered  = true;
         KeyPreview      = true;
+
+        // Smooth resize: full repaint, no flicker
+        SetStyle(ControlStyles.OptimizedDoubleBuffer
+               | ControlStyles.AllPaintingInWmPaint
+               | ControlStyles.ResizeRedraw, true);
+        UpdateStyles();
 
         TopMost    = _settings.AlwaysOnTop;
         Opacity    = Math.Clamp(_settings.Opacity, 0.2, 1.0);
@@ -251,7 +262,9 @@ public sealed class MainForm : Form
         _monitor.Dispose();
         _store.Dispose();
         _sb.Dispose();
-        _bgBrush.Dispose();
+        _bgGradBrush?.Dispose();
+        _outerPath?.Dispose();
+        _highlightPath?.Dispose();
     }
 
     // ── speed updates ─────────────────────────────────────────────────────
@@ -450,10 +463,49 @@ public sealed class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        InvalidateGdiCache();
         if (!IsHandleCreated) return;
         if (!_compact)
             _savedFullH = _expanded ? Height - StatsHeight : Height;
         UpdateLayout();
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        _resizing = true;
+        base.OnResizeBegin(e);
+    }
+
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        _resizing = false;
+        base.OnResizeEnd(e);
+        InvalidateGdiCache();
+        Invalidate();
+    }
+
+    // Rebuild gradient + paths on size or bg-color change
+    private void EnsureGdiCache()
+    {
+        if (_bgGradBrush != null && Size == _lastPaintedSize) return;
+        _bgGradBrush?.Dispose();
+        _outerPath?.Dispose();
+        _highlightPath?.Dispose();
+
+        var rect = new Rectangle(0, 0, Math.Max(1, Width), Math.Max(1, Height));
+        var top    = LightenColor(_settings.BgColor, 0.10f);
+        var bottom = DarkenColor (_settings.BgColor, 0.08f);
+        _bgGradBrush   = new LinearGradientBrush(rect, top, bottom, LinearGradientMode.Vertical);
+        _outerPath     = RoundedRect(0.5f, 0.5f, Width - 1.5f, Height - 1.5f, CornerRadius);
+        _highlightPath = RoundedRect(2f,   2f,   Width - 5f,   Height - 5f,   CornerRadius - 1.5f);
+        _lastPaintedSize = Size;
+    }
+
+    private void InvalidateGdiCache()
+    {
+        _bgGradBrush?.Dispose();   _bgGradBrush   = null;
+        _outerPath?.Dispose();     _outerPath     = null;
+        _highlightPath?.Dispose(); _highlightPath = null;
     }
 
     private void UpdateLayout()
@@ -502,16 +554,21 @@ public sealed class MainForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        EnsureGdiCache();
         var g   = e.Graphics;
         var sbr = SpeedBarRect;
 
-        g.FillRectangle(_bgBrush, sbr);
-        _sb.Paint(g, sbr, _dlBps, _ulBps);
+        // Cheap path while live-resizing — no AA, no ClearType
+        bool fast = _resizing;
+        g.SmoothingMode     = fast ? SmoothingMode.None         : SmoothingMode.AntiAlias;
+        g.TextRenderingHint = fast ? TextRenderingHint.SystemDefault
+                                   : TextRenderingHint.ClearTypeGridFit;
+
+        g.FillRectangle(_bgGradBrush!, sbr);
+        _sb.Paint(g, sbr, _dlBps, _ulBps, fast);
 
         if (!_compact)
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-
             using (var sep = new Pen(Color.FromArgb(130, _borderCol), 1f))
                 g.DrawLine(sep, BorderPad, sbr.Top, Width - BorderPad - 1, sbr.Top);
 
@@ -522,19 +579,23 @@ public sealed class MainForm : Form
                 using (var sep = new Pen(Color.FromArgb(130, _borderCol), 1f))
                     g.DrawLine(sep, BorderPad, _statsPanel.Top, Width - BorderPad - 1, _statsPanel.Top);
 
-            if (!_expanded)
+            if (!_expanded && !fast)
                 PaintGripDots(g);
         }
 
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        using (var hlPath = RoundedRect(2f, 2f, Width - 5f, Height - 5f, CornerRadius - 1.5f))
-        using (var hlPen  = new Pen(Color.FromArgb(100, 255, 255, 255), 1f))
-            g.DrawPath(hlPen, hlPath);
-
-        using (var path = RoundedRect(0.5f, 0.5f, Width - 1.5f, Height - 1.5f, CornerRadius))
-        using (var pen  = new Pen(_borderCol, 2.5f))
-            g.DrawPath(pen, path);
+        // Border + highlight — skip in fast path (avoid GDI churn)
+        if (!fast)
+        {
+            using var hlPen = new Pen(Color.FromArgb(100, 255, 255, 255), 1f);
+            g.DrawPath(hlPen, _highlightPath!);
+            using var pen   = new Pen(_borderCol, 2.5f);
+            g.DrawPath(pen, _outerPath!);
+        }
+        else
+        {
+            using var pen = new Pen(_borderCol, 2f);
+            g.DrawPath(pen, _outerPath!);
+        }
     }
 
     private void PaintGripDots(Graphics g)
@@ -673,16 +734,21 @@ public sealed class MainForm : Form
 
     private void ApplyBackground(Color c)
     {
-        _bgBrush.Dispose();
-        _bgBrush   = new SolidBrush(c);
         BackColor  = c;
         _borderCol = DarkenColor(c, 0.22f);
         if (_statsPanel != null) _statsPanel.BackColor = c;
+        InvalidateGdiCache();
         Invalidate();
     }
 
     private static Color DarkenColor(Color c, float f) =>
         Color.FromArgb((int)(c.R * (1 - f)), (int)(c.G * (1 - f)), (int)(c.B * (1 - f)));
+
+    private static Color LightenColor(Color c, float f) =>
+        Color.FromArgb(
+            (int)Math.Min(255, c.R + (255 - c.R) * f),
+            (int)Math.Min(255, c.G + (255 - c.G) * f),
+            (int)Math.Min(255, c.B + (255 - c.B) * f));
 
     // ── tray / window toggle ──────────────────────────────────────────────
 
@@ -1237,13 +1303,14 @@ public sealed class MainForm : Form
 
     public static string FormatSpeed(long bps)
     {
+        // Right-padded numeric field stops digit-jitter when paired with mono font
         long bits = bps * 8;
         return bits switch
         {
-            < 1_000L         => $"{bits} bps",
-            < 1_000_000L     => $"{bits / 1_000.0:F1} kbps",
-            < 1_000_000_000L => $"{bits / 1_000_000.0:F2} Mbps",
-            _                => $"{bits / 1_000_000_000.0:F2} Gbps"
+            < 1_000L         => $"{bits,5} bps",
+            < 1_000_000L     => $"{bits / 1_000.0,6:F1} kbps",
+            < 1_000_000_000L => $"{bits / 1_000_000.0,6:F2} Mbps",
+            _                => $"{bits / 1_000_000_000.0,6:F2} Gbps"
         };
     }
 
@@ -1263,16 +1330,34 @@ public sealed class MainForm : Form
 
     private sealed class SpeedBarPainter : IDisposable
     {
-        private readonly Font       _font      = new("Tahoma", 9.5f);
-        private readonly Font       _fontSmall = new("Tahoma", 8f);
-        private readonly SolidBrush _dlBrush   = new(Color.FromArgb(0,   155,  40));
-        private readonly SolidBrush _ulBrush   = new(Color.FromArgb(205,  45,  10));
+        // Monospaced fonts so digits stay aligned as values tick
+        private readonly Font       _font      = CreateMono(9.5f, FontStyle.Bold);
+        private readonly Font       _fontSmall = CreateMono(8f,   FontStyle.Bold);
+        private readonly SolidBrush _dlBrush   = new(Color.FromArgb( 59, 130, 246));   // Fluent blue
+        private readonly SolidBrush _ulBrush   = new(Color.FromArgb( 16, 185, 129));   // Fluent green
         private readonly SolidBrush _white     = new(Color.White);
 
-        public void Paint(Graphics g, Rectangle r, long dlBps, long ulBps)
+        private static Font CreateMono(float sz, FontStyle st)
         {
-            g.SmoothingMode     = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            foreach (var name in new[] { "Cascadia Mono", "Consolas", "Lucida Console" })
+            {
+                try
+                {
+                    var f = new Font(name, sz, st);
+                    if (string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase))
+                        return f;
+                    f.Dispose();
+                }
+                catch { /* try next */ }
+            }
+            return new Font(FontFamily.GenericMonospace, sz, st);
+        }
+
+        public void Paint(Graphics g, Rectangle r, long dlBps, long ulBps, bool fast = false)
+        {
+            g.SmoothingMode     = fast ? SmoothingMode.None : SmoothingMode.AntiAlias;
+            g.TextRenderingHint = fast ? TextRenderingHint.SystemDefault
+                                       : TextRenderingHint.ClearTypeGridFit;
 
             int half = r.Width / 2;
             PaintHalf(g, _dlBrush, FormatSpeed(dlBps), isDown: true,
@@ -1387,12 +1472,14 @@ public sealed class MainForm : Form
 
             if (_hov)
             {
-                using var hb = new SolidBrush(Color.FromArgb(200, _hoverCol));
-                g.FillEllipse(hb, 1, 1, Width - 2, Height - 2);
+                // Rounded-rect hover bg — Fluent style
+                using var hp = RoundedRect(0.5f, 0.5f, Width - 1f, Height - 1f, 4f);
+                using var hb = new SolidBrush(Color.FromArgb(220, _hoverCol));
+                g.FillPath(hb, hp);
             }
 
             using var sb = new SolidBrush(
-                _hov ? Color.White : Color.FromArgb(160, 35, 78, 128));
+                _hov ? Color.White : Color.FromArgb(190, 245, 250, 255));
             using var sf = new StringFormat
                 { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString(_sym, _font, sb, new RectangleF(0, 0, Width, Height), sf);
