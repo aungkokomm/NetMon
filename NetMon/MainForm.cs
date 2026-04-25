@@ -1333,8 +1333,9 @@ public sealed class MainForm : Form
         // Monospaced fonts so digits stay aligned as values tick
         private readonly Font       _font      = CreateMono(9.5f, FontStyle.Bold);
         private readonly Font       _fontSmall = CreateMono(8f,   FontStyle.Bold);
-        private readonly SolidBrush _dlBrush   = new(Color.FromArgb( 59, 130, 246));   // Fluent blue
-        private readonly SolidBrush _ulBrush   = new(Color.FromArgb( 16, 185, 129));   // Fluent green
+        // Convention: green = download, red = upload
+        private readonly SolidBrush _dlBrush   = new(Color.FromArgb(  0, 160,  50));
+        private readonly SolidBrush _ulBrush   = new(Color.FromArgb(210,  50,  35));
         private readonly SolidBrush _white     = new(Color.White);
 
         private static Font CreateMono(float sz, FontStyle st)
