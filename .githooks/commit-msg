@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Strip any "Co-Authored-By: ... Claude ..." trailers from commit messages.
+# Keeps this repo's history free of AI co-author attribution.
+sed -i '/^Co-Authored-By:.*[Cc]laude/d' "$1"
