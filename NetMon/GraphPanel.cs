@@ -149,28 +149,34 @@ public sealed class GraphPanel : Control
         }
         g.DrawLine(_gridPen, gx, h / 2f, w, h / 2f);
 
-        // ── Area + line draws ─────────────────────────────────────────────
+        // ── Vertical bar spikes (DU-Meter style) ──────────────────────────
         int count = Math.Min(gw, Samples);
         if (count >= 2)
         {
-            EnsureBuffers(count);
+            g.SmoothingMode = SmoothingMode.None;   // crisp 1-px bars
+            float xStep  = (float)(gw - 1) / (count - 1);
+            float hScale = _scale > 0 ? (h - 2) / _scale : 0f;
+            float baseY  = h - 1f;
 
-            // Fills first (download behind upload)
-            g.SmoothingMode = SmoothingMode.HighSpeed;
-            FillArea(g, _dl, _dlFill, count, gx, gw, h);
-            FillArea(g, _ul, _ulFill, count, gx, gw, h);
+            // Two passes so upload spikes don't fully hide download spikes.
+            // Pass 1: download (green). Pass 2: upload (red) drawn 1 px left
+            // of the same sample column so both stay visible.
+            for (int i = 0; i < count; i++)
+            {
+                int   idx = (_head - count + i + Samples) % Samples;
+                float x   = gx + i * xStep;
 
-            // Anti-aliased lines on top
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            DrawLine(g, _dl, _dlPen, count, gx, gw, h);
-            DrawLine(g, _ul, _ulPen, count, gx, gw, h);
-        }
-
-        // ── Today info overlay ────────────────────────────────────────────
-        if (TopInfo.Length > 0)
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.DrawString(TopInfo, _infoFont, _labelBrush, gx + 4f, 3f);
+                if (_dl[idx] > 0)
+                {
+                    float y = Math.Clamp(baseY - _dl[idx] * hScale, 1f, baseY);
+                    g.DrawLine(_dlPen, x, baseY, x, y);
+                }
+                if (_ul[idx] > 0)
+                {
+                    float y = Math.Clamp(baseY - _ul[idx] * hScale, 1f, baseY);
+                    g.DrawLine(_ulPen, x + 0.5f, baseY, x + 0.5f, y);
+                }
+            }
         }
     }
 

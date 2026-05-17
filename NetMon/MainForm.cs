@@ -300,11 +300,7 @@ public sealed class MainForm : Form
         }
 
         if (!_compact)
-        {
             _graph.AddSample(s.DownloadBps, s.UploadBps);
-            var topInfo = $"Today: {FormatBytes(_cachedToday.BytesReceived + _cachedToday.BytesSent)}";
-            if (_graph.TopInfo != topInfo) _graph.TopInfo = topInfo;
-        }
 
         bool changed = _dlBps != s.DownloadBps || _ulBps != s.UploadBps;
         _dlBps = s.DownloadBps;
@@ -1359,9 +1355,9 @@ public sealed class MainForm : Form
 
     private sealed class SpeedBarPainter : IDisposable
     {
-        // Monospaced fonts so digits stay aligned as values tick
-        private readonly Font       _font      = CreateMono(9.5f, FontStyle.Bold);
-        private readonly Font       _fontSmall = CreateMono(8f,   FontStyle.Bold);
+        // DU-Meter–style: proportional bold reads cleaner than mono at this size
+        private readonly Font       _font      = new("Segoe UI Semibold", 10f);
+        private readonly Font       _fontSmall = new("Segoe UI Semibold",  8.5f);
         // Convention: green = download, red = upload
         private readonly SolidBrush _dlBrush   = new(Color.FromArgb(  0, 160,  50));
         private readonly SolidBrush _ulBrush   = new(Color.FromArgb(210,  50,  35));
