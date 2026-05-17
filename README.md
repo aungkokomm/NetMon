@@ -6,7 +6,9 @@ NetMon is a minimalist, high-performance network monitoring widget designed for 
 
 ---
 
-<img width="371" height="133" alt="image" src="https://github.com/user-attachments/assets/96538715-b5ee-4446-9d60-929d5e09b2d2" />
+<img width="216" height="89" alt="image" src="https://github.com/user-attachments/assets/31f5fe99-0600-4c1b-a70a-595f6cd6fc99" />
+
+<img width="188" height="155" alt="image" src="https://github.com/user-attachments/assets/8d96a49a-6bcb-4f49-9ad8-cf9caea92c2d" />
 
 ## Features
 
