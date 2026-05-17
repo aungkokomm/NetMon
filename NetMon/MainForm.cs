@@ -80,6 +80,10 @@ public sealed class MainForm : Form
     private readonly NotifyIcon       _tray;
     private readonly ContextMenuStrip _trayMenu;
 
+    // ── hover-state (controls title-button visibility) ────────────────────
+    private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 150 };
+    private bool _hovering;
+
     // ── mouse drag / resize state-machine ─────────────────────────────────
     private enum DragMode { None, Moving, Resizing }
     private DragMode _drag;
@@ -169,6 +173,12 @@ public sealed class MainForm : Form
 
         _btnCompact.Click += (_, _) => ToggleCompact();
         _btnClose.Click   += (_, _) => ToggleWindow();
+
+        // Title buttons hidden by default — fade in on hover
+        _btnCompact.Visible = false;
+        _btnClose.Visible   = false;
+        _hoverTimer.Tick += (_, _) => UpdateHoverState();
+        _hoverTimer.Start();
 
         // ─ tray ──────────────────────────────────────────────────────────
         _trayMenu = BuildTrayMenu();
@@ -261,6 +271,8 @@ public sealed class MainForm : Form
         _tray.Dispose();
         _monitor.Dispose();
         _store.Dispose();
+        _hoverTimer.Stop();
+        _hoverTimer.Dispose();
         _sb.Dispose();
         _bgGradBrush?.Dispose();
         _outerPath?.Dispose();
@@ -418,7 +430,6 @@ public sealed class MainForm : Form
             if (_expanded) { _statsPanel.Visible = false; _expanded = false; }
 
             _graph.Visible     = false;
-            _btnClose.Visible  = false;
             _btnCompact.Size   = new Size(ButtonSize, ButtonSize);
             _btnCompact.Symbol = "□";
             MinimumSize        = new Size(120, PillHeight);
@@ -427,13 +438,30 @@ public sealed class MainForm : Form
         else
         {
             _graph.Visible     = true;
-            _btnClose.Visible  = true;
             _btnCompact.Symbol = "−";
             MinimumSize        = new Size(180, 50);
             Height             = _savedFullH > 0 ? _savedFullH : DefaultFullHeight;
         }
 
+        ApplyHoverVisibility();
         UpdateLayout();
+    }
+
+    // ── hover-driven title-button visibility ─────────────────────────────
+
+    private void UpdateHoverState()
+    {
+        if (!Visible || IsDisposed) return;
+        bool inside = RectangleToScreen(ClientRectangle).Contains(Cursor.Position);
+        if (inside == _hovering) return;
+        _hovering = inside;
+        ApplyHoverVisibility();
+    }
+
+    private void ApplyHoverVisibility()
+    {
+        _btnCompact.Visible = _hovering;
+        _btnClose.Visible   = _hovering && !_compact;
     }
 
     // ── stats expand / collapse ───────────────────────────────────────────
@@ -1305,12 +1333,13 @@ public sealed class MainForm : Form
     {
         // Right-padded numeric field stops digit-jitter when paired with mono font
         long bits = bps * 8;
+        // Mono font already aligns digits — minimal pad keeps badge → text tight
         return bits switch
         {
-            < 1_000L         => $"{bits,5} bps",
-            < 1_000_000L     => $"{bits / 1_000.0,6:F1} kbps",
-            < 1_000_000_000L => $"{bits / 1_000_000.0,6:F2} Mbps",
-            _                => $"{bits / 1_000_000_000.0,6:F2} Gbps"
+            < 1_000L         => $"{bits} bps",
+            < 1_000_000L     => $"{bits / 1_000.0:F1} kbps",
+            < 1_000_000_000L => $"{bits / 1_000_000.0:F2} Mbps",
+            _                => $"{bits / 1_000_000_000.0:F2} Gbps"
         };
     }
 
