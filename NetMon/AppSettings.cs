@@ -32,6 +32,15 @@ public sealed class AppSettings
     [JsonPropertyName("graphFillAlpha")]
     public int GraphFillAlpha { get; set; } = 85;
 
+    [JsonPropertyName("autoCheckUpdates")]
+    public bool AutoCheckUpdates { get; set; } = true;
+
+    [JsonPropertyName("lastUpdateCheckUtc")]
+    public DateTime LastUpdateCheckUtc { get; set; } = DateTime.MinValue;
+
+    [JsonPropertyName("skippedUpdateTag")]
+    public string SkippedUpdateTag { get; set; } = "";
+
     // Window geometry — restored on next launch
     [JsonPropertyName("winX")]  public int WinX { get; set; } = int.MinValue;
     [JsonPropertyName("winY")]  public int WinY { get; set; } = int.MinValue;

@@ -84,6 +84,9 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 150 };
     private bool _hovering;
 
+    // ── update check ──────────────────────────────────────────────────────
+    private string? _pendingUpdateUrl;
+
     // ── mouse drag / resize state-machine ─────────────────────────────────
     private enum DragMode { None, Moving, Resizing }
     private DragMode _drag;
@@ -189,7 +192,11 @@ public sealed class MainForm : Form
             Visible          = true,
             ContextMenuStrip = _trayMenu
         };
-        _tray.DoubleClick += (_, _) => ToggleWindow();
+        _tray.DoubleClick        += (_, _) => ToggleWindow();
+        _tray.BalloonTipClicked  += (_, _) =>
+        {
+            if (!string.IsNullOrEmpty(_pendingUpdateUrl)) OpenUrl(_pendingUpdateUrl);
+        };
 
         // ─ monitor ───────────────────────────────────────────────────────
         _monitor.SpeedUpdated  += OnSpeedUpdated;
@@ -637,6 +644,58 @@ public sealed class MainForm : Form
         UpdateLayout();
         TryDwmRound();
         if (_settings.HotKeyEnabled) RegisterGlobalHotkey();
+        ScheduleStartupUpdateCheck();
+    }
+
+    // ── update check (background, fire-and-forget) ───────────────────────
+
+    private void ScheduleStartupUpdateCheck()
+    {
+        if (!_settings.AutoCheckUpdates) return;
+        // Throttle: skip if checked within last 6 hours
+        if ((DateTime.UtcNow - _settings.LastUpdateCheckUtc).TotalHours < 6) return;
+
+        // Delay so startup isn't blocked by network DNS / TLS
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            await CheckForUpdatesAsync(showNoUpdateToast: false);
+        });
+    }
+
+    private async Task CheckForUpdatesAsync(bool showNoUpdateToast)
+    {
+        var info = await UpdateChecker.CheckAsync();
+        _settings.LastUpdateCheckUtc = DateTime.UtcNow;
+        _settings.Save();
+
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => HandleUpdateResult(info, showNoUpdateToast)); return; }
+        HandleUpdateResult(info, showNoUpdateToast);
+    }
+
+    private void HandleUpdateResult(UpdateChecker.UpdateInfo? info, bool showNoUpdateToast)
+    {
+        if (info == null)
+        {
+            if (showNoUpdateToast)
+            {
+                _tray.BalloonTipTitle = "NetMon is up to date";
+                _tray.BalloonTipText  = "You're running the latest release.";
+                _tray.ShowBalloonTip(4000);
+            }
+            return;
+        }
+
+        // Suppress balloon if the user previously hit "Skip" on this tag.
+        // Manual invocations (showNoUpdateToast == true) override the skip.
+        if (!showNoUpdateToast && _settings.SkippedUpdateTag == info.TagName) return;
+
+        _pendingUpdateUrl = info.HtmlUrl;
+        _tray.BalloonTipTitle = $"NetMon update available — {info.TagName}";
+        _tray.BalloonTipText  = "Click here to view the release on GitHub.";
+        _tray.BalloonTipIcon  = ToolTipIcon.Info;
+        _tray.ShowBalloonTip(10000);
     }
 
     // ── global hotkey + WndProc ──────────────────────────────────────────
@@ -834,6 +893,22 @@ public sealed class MainForm : Form
         var miUsage = new ToolStripMenuItem("View Usage…");
         miUsage.Click += (_, _) => { using var f = new UsageForm(_store); ShowDialogSafe(f); };
 
+        var miCheckUpd = new ToolStripMenuItem("Check for Updates…");
+        miCheckUpd.Click += async (_, _) =>
+        {
+            _settings.SkippedUpdateTag = "";   // user explicitly asked → un-skip
+            _settings.Save();
+            await CheckForUpdatesAsync(showNoUpdateToast: true);
+        };
+
+        var miAutoUpd = new ToolStripMenuItem("Auto-Check for Updates")
+            { Checked = _settings.AutoCheckUpdates, CheckOnClick = true };
+        miAutoUpd.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoCheckUpdates = miAutoUpd.Checked;
+            _settings.Save();
+        };
+
         var miAbout = new ToolStripMenuItem("About NetMon…");
         miAbout.Click += (_, _) => ShowAboutDialog();
 
@@ -847,6 +922,8 @@ public sealed class MainForm : Form
             miTop, miStartup, miStartMin, miHotkey, miBg, miTrans,
             new ToolStripSeparator(),
             miLimit, miUsage,
+            new ToolStripSeparator(),
+            miCheckUpd, miAutoUpd,
             new ToolStripSeparator(),
             miAbout, miExit
         });
