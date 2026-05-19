@@ -24,8 +24,10 @@ NetMon is a minimalist, high-performance network monitoring widget designed for 
 - **Window memory** — position and size are restored exactly where you left them
 
 ---
-![Stars](https://img.shields.io/github/stars/aungkokomm/NetMon?style=for-the-badge&color=blue)
-![Downloads](https://img.shields.io/github/downloads/aungkokomm/NetMon/total?style=for-the-badge&color=brightgreen)
+![GitHub Repo stars](https://img.shields.io/github/stars/aungkokomm/NetMon?style=for-the-badge)
+![GitHub all releases](https://img.shields.io/github/downloads/aungkokomm/NetMon/total?style=for-the-badge)
+![GitHub License](https://img.shields.io/github/license/aungkokomm/NetMon?style=for-the-badge)
+
 
 ## Installation
 
