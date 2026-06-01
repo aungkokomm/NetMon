@@ -40,6 +40,8 @@ public sealed class GraphPanel : Control
     private readonly Pen        _axisPen;
     private readonly SolidBrush _dlFill;
     private readonly SolidBrush _ulFill;
+    private readonly SolidBrush _dlBar      = new(DlLine);   // opaque bar fill
+    private readonly SolidBrush _ulBar      = new(UlLine);   // opaque bar fill
     private readonly SolidBrush _yaBrush    = new(YAxisBg);
     private readonly SolidBrush _labelBrush = new(LabelCol);
     private readonly Font       _scaleFont  = new("Tahoma", 7f, FontStyle.Bold);
@@ -149,35 +151,48 @@ public sealed class GraphPanel : Control
         }
         g.DrawLine(_gridPen, gx, h / 2f, w, h / 2f);
 
-        // ── Vertical bar spikes (DU-Meter style) ──────────────────────────
-        int count = Math.Min(gw, Samples);
-        if (count >= 2)
+        // ── Vertical bars (DU-Meter style) ────────────────────────────────
+        // One contiguous bar per pixel column — no gaps. When the graph is
+        // wider than the sample buffer, each column maps back to the nearest
+        // sample so the bars touch edge-to-edge like DU Meter.
+        if (gw >= 2)
         {
-            g.SmoothingMode = SmoothingMode.None;   // crisp 1-px bars
-            float xStep  = (float)(gw - 1) / (count - 1);
+            g.SmoothingMode = SmoothingMode.None;
             float hScale = _scale > 0 ? (h - 2) / _scale : 0f;
-            float baseY  = h - 1f;
+            int   baseY  = h - 1;
+            int   pxCols = gw;                          // draw every pixel column
 
-            // Two passes so upload spikes don't fully hide download spikes.
-            // Pass 1: download (green). Pass 2: upload (red) drawn 1 px left
-            // of the same sample column so both stay visible.
-            for (int i = 0; i < count; i++)
+            for (int px = 0; px < pxCols; px++)
             {
-                int   idx = (_head - count + i + Samples) % Samples;
-                float x   = gx + i * xStep;
+                // Map this pixel column to a sample (oldest → newest, L → R)
+                int s   = (int)((long)px * (Samples - 1) / (pxCols - 1));
+                int idx = (_head - Samples + s + Samples) % Samples;
+                int x   = gx + px;
 
-                if (_dl[idx] > 0)
+                long dl = _dl[idx], ul = _ul[idx];
+                // Larger value drawn first (behind), smaller on top, so both
+                // colours remain visible in the same column.
+                if (dl >= ul)
                 {
-                    float y = Math.Clamp(baseY - _dl[idx] * hScale, 1f, baseY);
-                    g.DrawLine(_dlPen, x, baseY, x, y);
+                    DrawBar(g, _dlBar, x, baseY, dl, hScale);
+                    DrawBar(g, _ulBar, x, baseY, ul, hScale);
                 }
-                if (_ul[idx] > 0)
+                else
                 {
-                    float y = Math.Clamp(baseY - _ul[idx] * hScale, 1f, baseY);
-                    g.DrawLine(_ulPen, x + 0.5f, baseY, x + 0.5f, y);
+                    DrawBar(g, _ulBar, x, baseY, ul, hScale);
+                    DrawBar(g, _dlBar, x, baseY, dl, hScale);
                 }
             }
         }
+    }
+
+    private static void DrawBar(Graphics g, SolidBrush brush, int x, int baseY,
+                                 long value, float hScale)
+    {
+        if (value <= 0) return;
+        int top = (int)Math.Clamp(baseY - value * hScale, 1f, baseY);
+        int barH = baseY - top + 1;
+        if (barH > 0) g.FillRectangle(brush, x, top, 1, barH);
     }
 
     // ── buffer helpers ────────────────────────────────────────────────────
@@ -251,6 +266,7 @@ public sealed class GraphPanel : Control
             _dlPen.Dispose();   _ulPen.Dispose();
             _gridPen.Dispose(); _axisPen.Dispose();
             _dlFill.Dispose();  _ulFill.Dispose();
+            _dlBar.Dispose();   _ulBar.Dispose();
             _yaBrush.Dispose(); _labelBrush.Dispose();
             _scaleFont.Dispose(); _infoFont.Dispose();
         }
