@@ -8,10 +8,10 @@
 ; ─────────────────────────────────────────────────────────────────────────────
 
 #define MyAppName        "NetMon"
-#define MyAppVersion     "1.7.1"
+#define MyAppVersion     "1.8.0"
 #define MyAppPublisher   "NetMon"
 #define MyAppExeName     "NetMon.exe"
-#define MyPublishDir     "NetMon\bin\Release\net8.0-windows\win-x64\publish"
+#define MyPublishDir     "NetMon\bin\Release\net10.0-windows\win-x64\publish"
 
 [Setup]
 AppId={{8F4E2A1B-C3D5-4E6F-A7B8-9C0D1E2F3A4B}
@@ -72,14 +72,9 @@ Name: "startup"; \
 
 ; ── Files ─────────────────────────────────────────────────────────────────────
 [Files]
-; Main executable (self-contained .NET 8 bundle)
+; Main executable (self-contained .NET 10 bundle)
 Source: "{#MyPublishDir}\NetMon.exe";                    DestDir: "{app}"; Flags: ignoreversion
-; Required native DLLs (cannot be merged into the single-file bundle)
-Source: "{#MyPublishDir}\D3DCompiler_47_cor3.dll";       DestDir: "{app}"; Flags: ignoreversion
-Source: "{#MyPublishDir}\PenImc_cor3.dll";               DestDir: "{app}"; Flags: ignoreversion
-Source: "{#MyPublishDir}\PresentationNative_cor3.dll";   DestDir: "{app}"; Flags: ignoreversion
-Source: "{#MyPublishDir}\vcruntime140_cor3.dll";         DestDir: "{app}"; Flags: ignoreversion
-Source: "{#MyPublishDir}\wpfgfx_cor3.dll";               DestDir: "{app}"; Flags: ignoreversion
+; (.NET 10 no longer emits the WPF native *_cor3.dll files for this WinForms app.)
 
 ; ── Shortcuts ─────────────────────────────────────────────────────────────────
 [Icons]

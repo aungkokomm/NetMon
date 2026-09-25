@@ -1548,6 +1548,7 @@ public sealed class MainForm : Form
         private readonly Color _hoverCol;
         private readonly Font  _font = new("Tahoma", 9f, FontStyle.Bold);
 
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
         public string Symbol { get => _sym; set { _sym = value; Invalidate(); } }
 
         public TitleButton(string sym, Color hoverCol)

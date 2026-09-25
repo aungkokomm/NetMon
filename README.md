@@ -68,7 +68,7 @@ NetMon is a minimalist, high-performance network monitoring widget designed for 
 
 ## Build from Source
 
-**Requirements:** .NET 8 SDK, Windows
+**Requirements:** .NET 10 SDK, Windows
 
 ```bash
 git clone https://github.com/aungkokomm/NetMon.git

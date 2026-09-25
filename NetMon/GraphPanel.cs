@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 
@@ -60,9 +61,11 @@ public sealed class GraphPanel : Control
     private long  _prevDl, _prevUl;
 
     /// <summary>Small informational line painted in the graph top-left (e.g. "Today 12.4 MB").</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string TopInfo { get; set; } = "";
 
     /// <summary>Alpha channel (0–255) for the area fills under the download / upload lines.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int FillAlpha
     {
         get => _dlFill.Color.A;
