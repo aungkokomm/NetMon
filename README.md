@@ -2,7 +2,7 @@
 
 Lightweight Network Bandwidth Monitor for Windows — inspired by [DU Meter](https://hageltech.com/dumeter).
 
-NetMon is a minimalist, high-performance network monitoring widget designed for Windows. Inspired by the classic DU Meter, it provides real-time insights into your upload and download speeds through a sleek, unobtrusive interface. Built with C# and WinForms on .NET 8, NetMon is optimized for users who need precise data tracking without the resource overhead of traditional monitoring suites.
+NetMon is a minimalist, high-performance network monitoring widget designed for Windows. Inspired by the classic DU Meter, it provides real-time insights into your upload and download speeds through a sleek, unobtrusive interface. Built with C# and WinForms on .NET 10, NetMon is optimized for users who need precise data tracking without the resource overhead of traditional monitoring suites.
 
 ---
 
