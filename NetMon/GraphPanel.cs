@@ -19,7 +19,9 @@ namespace NetMon;
 public sealed class GraphPanel : Control
 {
     // ── config ────────────────────────────────────────────────────────────
-    private const int   Samples  = 120;
+    // Keep more samples than the graph is ever wide so each pixel column maps
+    // to its own sample — one thin 1-px bar per column, no blocky stair-steps.
+    private const int   Samples  = 600;
     private const float MinScale = 2048f;
     private const int   YAxisW   = 26;   // left label strip
 
@@ -155,22 +157,22 @@ public sealed class GraphPanel : Control
         g.DrawLine(_gridPen, gx, h / 2f, w, h / 2f);
 
         // ── Vertical bars (DU-Meter style) ────────────────────────────────
-        // One contiguous bar per pixel column — no gaps. When the graph is
-        // wider than the sample buffer, each column maps back to the nearest
-        // sample so the bars touch edge-to-edge like DU Meter.
+        // Draw the most recent samples one per pixel column, newest at the
+        // right edge. With the buffer larger than the graph width, each
+        // column is its own sample => thin 1-px bars like DU Meter, not
+        // blocky stair-steps.
         if (gw >= 2)
         {
             g.SmoothingMode = SmoothingMode.None;
             float hScale = _scale > 0 ? (h - 2) / _scale : 0f;
             int   baseY  = h - 1;
-            int   pxCols = gw;                          // draw every pixel column
+            int   n      = Math.Min(gw, Samples);   // newest n samples, 1 px each
+            int   x0     = gx + (gw - n);           // right-align the newest bar
 
-            for (int px = 0; px < pxCols; px++)
+            for (int i = 0; i < n; i++)
             {
-                // Map this pixel column to a sample (oldest → newest, L → R)
-                int s   = (int)((long)px * (Samples - 1) / (pxCols - 1));
-                int idx = (_head - Samples + s + Samples) % Samples;
-                int x   = gx + px;
+                int idx = ((_head - n + i) % Samples + Samples) % Samples;
+                int x   = x0 + i;
 
                 long dl = _dl[idx], ul = _ul[idx];
                 // Larger value drawn first (behind), smaller on top, so both

@@ -30,7 +30,7 @@ public sealed class SpeedSample
 /// </summary>
 public sealed class NetworkMonitor : IDisposable
 {
-    private const int    PollMs    = 2_000;   // UI refresh cadence
+    private const int    PollMs    = 1_000;   // UI refresh cadence (finer graph detail)
     private const double RescanSec = 60.0;    // full re-enumerate interval
 
     private DateTime _lastTick;
