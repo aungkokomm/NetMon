@@ -30,10 +30,13 @@ public sealed class MainForm : Form
     private const int CornerRadius       = 12;
     private const int ButtonSize         = 16;
     private const int GripSize           = 15;
-    private const int SnapDistance       = 12;
+    private const int SnapDistance       = 16;
 
     private static int PillHeight        => BorderPad + BarHeight + BorderPad;
     private static int DefaultFullHeight => BorderPad + DefaultGraphHeight + BarHeight + BorderPad;
+    // Smallest usable full view (40-px graph). Anything below this is a squashed
+    // geometry saved by an older build, so it falls back to the default.
+    private static int FullMinHeight     => BorderPad + 40 + BarHeight + BorderPad;
 
     // ── DWM / Win32 named constants ───────────────────────────────────────
     private const int  DWMWA_WINDOW_CORNER_PREFERENCE = 33;
@@ -56,6 +59,7 @@ public sealed class MainForm : Form
     private bool        _compact;
     private bool        _expanded;
     private int         _savedFullH;
+    private int         _savedFullW;         // float width to restore when leaving compact
     private int         _graphH = DefaultGraphHeight;
     private bool        _firstShow       = true;
     private bool        _hotkeyRegistered;
@@ -115,7 +119,7 @@ public sealed class MainForm : Form
         Text            = "NetMon";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar   = false;
-        MinimumSize     = new Size(180, 50);
+        MinimumSize     = new Size(180, FullMinHeight);
         DoubleBuffered  = true;
         KeyPreview      = true;
 
@@ -231,7 +235,7 @@ public sealed class MainForm : Form
     private void RestoreGeometry()
     {
         int w = _settings.WinW > 0 ? Math.Max(_settings.WinW, 180) : DefaultWidth;
-        int h = _settings.WinH > 0 ? Math.Max(_settings.WinH, PillHeight) : DefaultFullHeight;
+        int h = _settings.WinH >= FullMinHeight ? _settings.WinH : DefaultFullHeight;
         Size = new Size(w, h);
 
         if (_settings.WinX != int.MinValue)
@@ -245,17 +249,15 @@ public sealed class MainForm : Form
         }
     }
 
-    private static Point ClampToWorkArea(Point p, Size s)
-    {
-        var wa = Screen.GetWorkingArea(p);
-        return new Point(
-            Math.Clamp(p.X, wa.Left, Math.Max(wa.Left, wa.Right  - s.Width)),
-            Math.Clamp(p.Y, wa.Top,  Math.Max(wa.Top,  wa.Bottom - s.Height)));
-    }
+    private static Point ClampToWorkArea(Point p, Size s) =>
+        ClampInto(Screen.GetWorkingArea(p), p, s);
 
-    private Point SnapToEdges(Point p, Size s)
+    private static Point ClampInto(Rectangle wa, Point p, Size s) => new(
+        Math.Clamp(p.X, wa.Left, Math.Max(wa.Left, wa.Right  - s.Width)),
+        Math.Clamp(p.Y, wa.Top,  Math.Max(wa.Top,  wa.Bottom - s.Height)));
+
+    private static Point SnapToEdges(Point p, Size s, Rectangle wa)
     {
-        var wa = Screen.GetWorkingArea(new Rectangle(p, s));
         int x  = p.X, y = p.Y;
         if (Math.Abs(x - wa.Left)              < SnapDistance) x = wa.Left;
         if (Math.Abs((x + s.Width) - wa.Right) < SnapDistance) x = wa.Right  - s.Width;
@@ -268,7 +270,8 @@ public sealed class MainForm : Form
     {
         _settings.WinX = Location.X;
         _settings.WinY = Location.Y;
-        _settings.WinW = Width;
+        // Persist the full-view size, never the shrunken compact pill size.
+        _settings.WinW = _compact ? _savedFullW : Width;
         _settings.WinH = _compact ? _savedFullH : (_expanded ? Height - StatsHeight : Height);
         _settings.Save();
 
@@ -313,6 +316,7 @@ public sealed class MainForm : Form
         _dlBps = s.DownloadBps;
         _ulBps = s.UploadBps;
         if (changed) Invalidate(SpeedBarRect);
+        FitCompactPill();   // every tick: the 3 s shrink delay counts ticks
 
         if (_statsPanel.Visible)
             _statsPanel.Refresh(_cachedToday, _store.GetThisMonth(),
@@ -361,7 +365,10 @@ public sealed class MainForm : Form
                 var target = new Point(
                     _dragFormOrigin.X + Cursor.Position.X - _dragOrigin.X,
                     _dragFormOrigin.Y + Cursor.Position.Y - _dragOrigin.Y);
-                Location = SnapToEdges(target, Size);
+                // Magnet: snap to the edges of the monitor under the cursor, then
+                // clamp so the widget can never be pushed off-screen.
+                var wa = Screen.FromPoint(Cursor.Position).WorkingArea;
+                Location = ClampInto(wa, SnapToEdges(target, Size, wa), Size);
                 break;
 
             case DragMode.Resizing when e.Button == MouseButtons.Left:
@@ -430,24 +437,84 @@ public sealed class MainForm : Form
         if (_compact)
         {
             _savedFullH = _expanded ? Height - StatsHeight : Height;
+            _savedFullW = Width;
             if (_expanded) { _statsPanel.Visible = false; _expanded = false; }
 
             _graph.Visible     = false;
             _btnCompact.Size   = new Size(ButtonSize, ButtonSize);
             _btnCompact.Symbol = "□";
-            MinimumSize        = new Size(120, PillHeight);
-            Height             = PillHeight;
+            _compactShrinkTicks = 0;
+            MinimumSize        = new Size(60, 20);   // lowering never resizes
+            ResizeEdgeAware(ComputeCompactPillSize());
         }
         else
         {
+            // Capture the saved size BEFORE raising MinimumSize: raising it grows
+            // the pill at once, and that OnResize would overwrite _savedFullH.
+            var full = new Size(Math.Max(180, _savedFullW > 0 ? _savedFullW : DefaultWidth),
+                                _savedFullH >= FullMinHeight ? _savedFullH : DefaultFullHeight);
             _graph.Visible     = true;
             _btnCompact.Symbol = "−";
-            MinimumSize        = new Size(180, 50);
-            Height             = _savedFullH > 0 ? _savedFullH : DefaultFullHeight;
+            ResizeEdgeAware(full);
+            MinimumSize        = new Size(180, FullMinHeight);
         }
 
         ApplyHoverVisibility();
         UpdateLayout();
+    }
+
+    /// <summary>Pill size that fits the CURRENT readouts (two equal halves, like DU Meter).</summary>
+    private Size ComputeCompactPillSize()
+    {
+        using var g = CreateGraphics();
+        var half = _sb.MeasureCompactHalf(g, FormatSpeed(_dlBps), FormatSpeed(_ulBps));
+        int w    = BorderPad * 2 + half.Width * 2;
+        w        = (w + 7) / 8 * 8;                     // 8-px steps: no 1-px jitter
+        return new Size(w, Math.Max(22, BorderPad * 2 + half.Height));
+    }
+
+    private int _compactShrinkTicks;
+
+    /// <summary>Keep the pill hugging its readouts: grow at once, shrink after 3 s.</summary>
+    private void FitCompactPill()
+    {
+        if (!_compact || _drag != DragMode.None) return;
+        var want = ComputeCompactPillSize();
+
+        if (want.Width > Width || want.Height != Height)
+        {
+            _compactShrinkTicks = 0;
+            ResizeEdgeAware(want);
+        }
+        else if (want.Width < Width)
+        {
+            if (++_compactShrinkTicks >= 3) { _compactShrinkTicks = 0; ResizeEdgeAware(want); }
+        }
+        else _compactShrinkTicks = 0;
+    }
+
+    // Corner radius, capped so a short pill's arcs never overlap.
+    private float Radius => Math.Min(CornerRadius, (Height - 5) / 2f);
+
+    private Rectangle CompactReadoutRect => new(
+        BorderPad, BorderPad,
+        Math.Max(0, Width  - BorderPad * 2),
+        Math.Max(0, Height - BorderPad * 2));
+
+    /// <summary>
+    /// Resize while staying screen-edge aware: an edge the widget is flush with
+    /// stays flush (a pill snapped to the bottom/right grows up/left), and the
+    /// result is clamped so it never extends off the work area.
+    /// </summary>
+    private void ResizeEdgeAware(Size size)
+    {
+        var  wa       = Screen.GetWorkingArea(Bounds);
+        bool atRight  = Math.Abs(Right  - wa.Right)  <= 1;
+        bool atBottom = Math.Abs(Bottom - wa.Bottom) <= 1;
+
+        var p = new Point(atRight  ? wa.Right  - size.Width  : Left,
+                          atBottom ? wa.Bottom - size.Height : Top);
+        Bounds = new Rectangle(ClampInto(wa, p, size), size);
     }
 
     // ── hover-driven title-button visibility ─────────────────────────────
@@ -479,13 +546,13 @@ public sealed class MainForm : Form
                                 _settings.MonthlyLimitBytes);
             _statsPanel.Visible = true;
             _expanded           = true;
-            Height             += StatsHeight;
+            ResizeEdgeAware(new Size(Width, Height + StatsHeight));
         }
         else
         {
             _statsPanel.Visible = false;
             _expanded           = false;
-            Height             -= StatsHeight;
+            ResizeEdgeAware(new Size(Width, Height - StatsHeight));
         }
     }
 
@@ -527,8 +594,8 @@ public sealed class MainForm : Form
         var top    = LightenColor(_settings.BgColor, 0.10f);
         var bottom = DarkenColor (_settings.BgColor, 0.08f);
         _bgGradBrush   = new LinearGradientBrush(rect, top, bottom, LinearGradientMode.Vertical);
-        _outerPath     = RoundedRect(0.5f, 0.5f, Width - 1.5f, Height - 1.5f, CornerRadius);
-        _highlightPath = RoundedRect(2f,   2f,   Width - 5f,   Height - 5f,   CornerRadius - 1.5f);
+        _outerPath     = RoundedRect(0.5f, 0.5f, Width - 1.5f, Height - 1.5f, Radius);
+        _highlightPath = RoundedRect(2f,   2f,   Width - 5f,   Height - 5f,   Radius - 1.5f);
         _lastPaintedSize = Size;
     }
 
@@ -596,7 +663,10 @@ public sealed class MainForm : Form
                                    : TextRenderingHint.ClearTypeGridFit;
 
         g.FillRectangle(_bgGradBrush!, sbr);
-        _sb.Paint(g, sbr, _dlBps, _ulBps, fast);
+        if (_compact)
+            _sb.PaintCompact(g, CompactReadoutRect, _dlBps, _ulBps, _borderCol, fast);
+        else
+            _sb.Paint(g, sbr, _dlBps, _ulBps, fast);
 
         if (!_compact)
         {
@@ -741,7 +811,7 @@ public sealed class MainForm : Form
 
     private void UpdateRegion()
     {
-        using var path = RoundedRect(0, 0, Width, Height, CornerRadius);
+        using var path = RoundedRect(0, 0, Width, Height, Radius);
         Region = new Region(path);
     }
 
@@ -850,6 +920,14 @@ public sealed class MainForm : Form
         var miToggle = new ToolStripMenuItem("Hide Window");
         miToggle.Click += (_, _) => ToggleWindow();
 
+        // Discoverable way back from the compact pill to the full widget.
+        var miExpand = new ToolStripMenuItem("Expand to Full View");
+        miExpand.Click += (_, _) =>
+        {
+            if (!Visible) ToggleWindow();
+            if (_compact) ToggleCompact();
+        };
+
         var miTop = new ToolStripMenuItem("Always on Top")
             { Checked = _settings.AlwaysOnTop, CheckOnClick = true };
         miTop.CheckedChanged += (_, _) =>
@@ -917,7 +995,7 @@ public sealed class MainForm : Form
 
         menu.Items.AddRange(new ToolStripItem[]
         {
-            miToggle,
+            miToggle, miExpand,
             new ToolStripSeparator(),
             miTop, miStartup, miStartMin, miHotkey, miBg, miTrans,
             new ToolStripSeparator(),
@@ -931,6 +1009,7 @@ public sealed class MainForm : Form
         menu.Opening += (_, _) =>
         {
             miToggle.Text     = Visible ? "Hide Window" : "Show Window";
+            miExpand.Enabled  = _compact || !Visible;
             miStartup.Checked = AppSettings.IsStartupEnabled();
         };
         return menu;
@@ -1440,6 +1519,61 @@ public sealed class MainForm : Form
         private readonly SolidBrush _ulBrush   = new(Color.FromArgb(210,  50,  35));
         private readonly SolidBrush _white     = new(Color.White);
 
+        // Compact pill (DU Meter look): smaller regular font, plain arrow, text
+        // right after the arrow. One tight format is used to both measure and
+        // draw, so the pill is sized exactly to what gets painted.
+        private readonly Font         _compactFont = new("Segoe UI", 9f);
+        private readonly StringFormat _compactFmt  = CreateCompactFormat();
+
+        private static StringFormat CreateCompactFormat()
+        {
+            var f = (StringFormat)StringFormat.GenericTypographic.Clone();
+            f.LineAlignment = StringAlignment.Center;
+            f.Trimming      = StringTrimming.EllipsisCharacter;
+            f.FormatFlags  |= StringFormatFlags.NoWrap;
+            return f;
+        }
+
+        /// <summary>Size of one compact half that fits both readouts (halves are equal).</summary>
+        public Size MeasureCompactHalf(Graphics g, string dlText, string ulText)
+        {
+            float s  = g.DpiX / 96f;
+            float tw = Math.Max(g.MeasureString(dlText, _compactFont, PointF.Empty, _compactFmt).Width,
+                                g.MeasureString(ulText, _compactFont, PointF.Empty, _compactFmt).Width);
+            return new Size((int)Math.Ceiling(6 * s + 10 * s + 5 * s + tw + 2 * s + 6 * s),
+                            (int)Math.Ceiling(_compactFont.GetHeight(g) + 3 * s));
+        }
+
+        public void PaintCompact(Graphics g, Rectangle r, long dlBps, long ulBps,
+                                 Color divider, bool fast = false)
+        {
+            g.SmoothingMode     = fast ? SmoothingMode.None : SmoothingMode.AntiAlias;
+            g.TextRenderingHint = fast ? TextRenderingHint.SystemDefault
+                                       : TextRenderingHint.ClearTypeGridFit;
+            float s    = g.DpiX / 96f;
+            int   half = r.Width / 2;
+
+            PaintCompactHalf(g, _dlBrush, FormatSpeed(dlBps), true,
+                             new Rectangle(r.X, r.Y, half, r.Height), s);
+            PaintCompactHalf(g, _ulBrush, FormatSpeed(ulBps), false,
+                             new Rectangle(r.X + half, r.Y, r.Width - half, r.Height), s);
+
+            using var pen = new Pen(Color.FromArgb(110, divider), 1f);
+            g.DrawLine(pen, r.X + half, r.Y + 4 * s, r.X + half, r.Bottom - 4 * s);
+        }
+
+        private void PaintCompactHalf(Graphics g, SolidBrush brush, string text,
+                                      bool isDown, Rectangle r, float s)
+        {
+            float pad = 6 * s, arrowW = 10 * s, gap = 5 * s;
+            DrawArrow(g, brush, (int)(r.X + pad + arrowW / 2), r.Y + r.Height / 2, isDown, s);
+
+            float tx = r.X + pad + arrowW + gap;
+            g.DrawString(text, _compactFont, brush,
+                         new RectangleF(tx, r.Y, Math.Max(0, r.Right - pad - tx + 1), r.Height),
+                         _compactFmt);
+        }
+
         private static Font CreateMono(float sz, FontStyle st)
         {
             foreach (var name in new[] { "Cascadia Mono", "Consolas", "Lucida Console" })
@@ -1511,9 +1645,10 @@ public sealed class MainForm : Form
             return p;
         }
 
-        private static void DrawArrow(Graphics g, Brush brush, int cx, int cy, bool down)
+        private static void DrawArrow(Graphics g, Brush brush, int cx, int cy, bool down,
+                                      float scale = 1f)
         {
-            const int sw = 2, sh = 5, hw = 5, hh = 4;
+            float sw = 2 * scale, sh = 5 * scale, hw = 5 * scale, hh = 4 * scale;
             PointF[] pts = down
                 ? new PointF[]
                 {
@@ -1535,6 +1670,7 @@ public sealed class MainForm : Form
         public void Dispose()
         {
             _font.Dispose(); _fontSmall.Dispose();
+            _compactFont.Dispose(); _compactFmt.Dispose();
             _dlBrush.Dispose(); _ulBrush.Dispose(); _white.Dispose();
         }
     }
@@ -1582,8 +1718,12 @@ public sealed class MainForm : Form
                 g.FillPath(hb, hp);
             }
 
+            // Idle glyph contrasts with the widget background (dark on light, light on dark).
+            var bg = Parent?.BackColor ?? BackColor;
             using var sb = new SolidBrush(
-                _hov ? Color.White : Color.FromArgb(190, 245, 250, 255));
+                _hov                     ? Color.White
+                : bg.GetBrightness() > 0.6f ? Color.FromArgb(190, 40, 50, 65)
+                                         : Color.FromArgb(190, 245, 250, 255));
             using var sf = new StringFormat
                 { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString(_sym, _font, sb, new RectangleF(0, 0, Width, Height), sf);
